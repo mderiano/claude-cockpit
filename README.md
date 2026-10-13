@@ -1,5 +1,7 @@
 # Cockpit
 
+**Français** · [English](README.en.md)
+
 Un panneau en direct qui montre ce que fait Claude : les commandes et leur sortie, les fichiers modifiés avec leur diff, les sous-agents (y compris ceux des workflows ultracode) et l’écran d’un simulateur, d’un émulateur ou du navigateur.
 
 Le cockpit se contente d’observer. Il ne bloque jamais un appel d’outil et ne le modifie pas. Si quelque chose casse de son côté, l’erreur est avalée et la session continue.

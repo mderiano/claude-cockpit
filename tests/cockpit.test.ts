@@ -3,9 +3,10 @@ import type { Plugin } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { CockpitAgent, CockpitChange, CockpitEvent, CockpitFeedRef, CockpitFile, CockpitScreen, CockpitStats, CockpitUi, CockpitWorkflow } from '../types'
 
+import { statusLine } from '../hooks/capture'
 import { diffLines, diffTexts, renderHunks } from '../hooks/diff'
-import { clean } from '../hooks/model'
-import { imageSize, parseSimctl } from '../hooks/screen'
+import { clean, EMPTY_STATS, sparkText } from '../hooks/model'
+import { imageSize, parseSimctl, sipsError } from '../hooks/screen'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
@@ -119,7 +120,7 @@ const engine = (on: On) => {
 
 describe('cockpit', () => {
   test('a Bash call lands in the feed with its output and an ok status', WITH_SPY, async ($, on) => {
-    const { statuses } = engine(on)
+    const { statuses, clock } = engine(on)
     on('tool.call', ($, e) => ({
       result: { stdout: 'PASS src/a.test.ts\nAll good: 12 tests', stderr: '', interrupted: false },
       text: 'All good',
@@ -128,6 +129,8 @@ describe('cockpit', () => {
     const r = await $.tool.call({ tool: 'Bash', command: 'npm test', description: 'Run the tests', tool_use_id: 'b1' })
     // The result reaches the model untouched.
     expect(r.text).toBe('All good')
+    // The bookkeeping follows the result, once its dispatch resolved.
+    await clock.settle()
     const ev = { value: await peek($, 'event', 'b1') }
     expect(ev.value).toMatchObject({ tool: 'Bash', cat: 'shell', status: 'ok', exitCode: 0, isTest: true })
     expect(ev.value?.output).toContain('All good: 12 tests')
@@ -151,7 +154,7 @@ describe('cockpit', () => {
   })
 
   test('a failing or denied call is shown as such and the answer is relayed unchanged', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', ($, e) =>
       e.tool_use_id === 'd1' ? { deny: 'nope' } : { isError: true as const, result: 'Exit code 2\nboom', text: 'Exit code 2\nboom' },
     )
@@ -161,6 +164,7 @@ describe('cockpit', () => {
     expect(failed.text).toBe('Exit code 2\nboom')
     const denied = await $.tool.call({ tool: 'Bash', command: 'rm -rf x', tool_use_id: 'd1' })
     expect(denied.deny).toBe('nope')
+    await clock.settle()
     const e1 = { value: await peek($, 'event', 'e1') }
     expect(e1.value).toMatchObject({ status: 'error', exitCode: 2 })
     const d1 = { value: await peek($, 'event', 'd1') }
@@ -170,7 +174,7 @@ describe('cockpit', () => {
   })
 
   test('an Edit records the file and a unified diff', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', ($, e) => ({
       result: {
         filePath: '/proj/src/app.ts',
@@ -185,6 +189,7 @@ describe('cockpit', () => {
     }))
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await $.tool.call({ tool: 'Edit', file_path: '/proj/src/app.ts', old_string: 'const a = 1', new_string: 'const a = 2', tool_use_id: 'ed1' })
+    await clock.settle()
     const files = { value: await peek($, 'files') }
     expect(files.value?.[0]).toMatchObject({ path: '/proj/src/app.ts', added: 1, removed: 1, edits: 1 })
     const changes = { value: await peek($, 'changes', '/proj/src/app.ts') }
@@ -204,21 +209,50 @@ describe('cockpit', () => {
   })
 
   test('a Write that creates a file is all added lines', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', () => ({
       result: { type: 'create', filePath: '/proj/new.md', content: '# Hi\nthere\n', structuredPatch: [], originalFile: null },
       text: 'created',
     }))
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await $.tool.call({ tool: 'Write', file_path: '/proj/new.md', content: '# Hi\nthere\n', tool_use_id: 'w1' })
+    await clock.settle()
     const changes = { value: await peek($, 'changes', '/proj/new.md') }
     expect(changes.value?.[0]?.diff).toBe('@@ -0,0 +1,2 @@\n+# Hi\n+there\n')
     const files = { value: await peek($, 'files') }
     expect(files.value?.[0]).toMatchObject({ isCreated: true, added: 2, removed: 0 })
   })
 
+  test('a Write over a file too large to diff is no creation; a staged one is no change', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    on('tool.call', ($, e) => ({
+      result: {
+        type: 'update',
+        filePath: '/proj/big.txt',
+        content: 'a\nb\nc\n',
+        structuredPatch: [],
+        originalFile: null,
+        ...(e.tool_use_id === 'w-staged' ? { staged: true } : {}),
+      },
+      text: 'updated',
+    }))
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Write', file_path: '/proj/big.txt', content: 'a\nb\nc\n', tool_use_id: 'w-big' })
+    await $.tool.call({ tool: 'Write', file_path: '/proj/held.txt', content: 'x', tool_use_id: 'w-staged' })
+    await clock.settle()
+    const files = await peek($, 'files')
+    expect(files).toHaveLength(1)
+    expect(files?.[0]).toMatchObject({ path: '/proj/big.txt', added: 0, removed: 0 })
+    expect(files?.[0]?.isCreated).not.toBe(true)
+    expect((await peek($, 'changes', '/proj/big.txt'))?.[0]).toMatchObject({ diff: '', isTooLarge: true })
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    await ui.press({ key: 'tab-files' })
+    expect(await ui.find({ text: /too large for a diff/ })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('a subagent and its tool calls are attributed to its agentId', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('agent.spawn', () => ({ model: 'claude-haiku', agentId: 'ag-1' }))
     on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/proj/x.ts', content: 'x', numLines: 1, startLine: 1, totalLines: 1 } }, text: 'x' }))
     on('turn.complete', ($, e) => ({ text: e.answer }))
@@ -235,6 +269,7 @@ describe('cockpit', () => {
     })
     expect(spawned).toMatchObject({ agentId: 'ag-1' })
     await $.tool.call({ tool: 'Read', file_path: '/proj/x.ts', tool_use_id: 'r1', agentId: 'ag-1' } as never)
+    await clock.settle()
     const feed = { value: await peek($, 'feed') }
     expect(feed.value).toContainEqual({ id: 'r1', agent: 'ag-1' })
     const r1 = { value: await peek($, 'event', 'r1') }
@@ -263,12 +298,13 @@ describe('cockpit', () => {
   })
 
   test('workflow agents are grouped under their run', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     let n = 0
     on('agent.spawn', () => ({ model: 'm', agentId: `wf-agent-${++n}` }))
     on('tool.call', () => ({ result: { status: 'async_launched', taskId: 'task-1', runId: 'wf_123', workflowName: 'ultra-review' }, text: 'launched' }))
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await $.tool.call({ tool: 'Workflow', name: 'ultra-review', tool_use_id: 'wf-call' })
+    await clock.settle()
     for (const i of [1, 2, 3]) {
       await $.agent.spawn({
         tool_use_id: 'wf-call',
@@ -295,7 +331,7 @@ describe('cockpit', () => {
   })
 
   test('concurrent calls all land (no lost writes)', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     let release: () => void = () => undefined
     const gate = new Promise<void>(resolve => {
       release = resolve
@@ -310,6 +346,7 @@ describe('cockpit', () => {
     await $.tool.call({ tool: 'Bash', command: 'echo b', tool_use_id: 'fast-b' })
     release()
     await slow
+    await clock.settle()
     const feed = { value: await peek($, 'feed') }
     expect(feed.value?.map((f: CockpitFeedRef) => f.id)).toEqual(['slow', 'fast-a', 'fast-b'])
     const stats = { value: await peek($, 'stats') }
@@ -339,13 +376,28 @@ describe('cockpit', () => {
   })
 
   test('/cockpit opens the pane on the asked tab', WITH_SPY, async ($, on) => {
-    const { opened } = engine(on)
+    const { opened, toasts, clock } = engine(on)
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-    const r = await $.command.run({ command: 'cockpit', args: 'agents', origin: ORIGIN, presentation: PRESENTATION })
-    expect(r.text).toContain('agents')
+    const run = (args: string) => $.command.run({ command: 'cockpit', args, origin: ORIGIN, presentation: PRESENTATION })
+    // The pane is the answer: no transcript row for the model to read.
+    const r = await run('agents')
+    expect(r.text).toBeUndefined()
     expect(opened).toContain('cockpit')
     const ui = { value: await peek($, 'ui') }
     expect(ui.value?.tab).toBe('agents')
+    // An unknown word says what the command takes, and opens nothing.
+    const unknown = await run('diffz')
+    expect(unknown.text).toContain('live [on|off]')
+    expect(opened).toHaveLength(1)
+    // Live is set, not flipped, and says where it stands.
+    await run('live on')
+    await run('live on')
+    await clock.settle()
+    expect((await peek($, 'screen'))?.isLive).toBe(true)
+    expect(toasts.filter(t => t.includes('Live ● on'))).toHaveLength(2)
+    await run('live off')
+    expect((await peek($, 'screen'))?.isLive).toBe(false)
+    expect((await peek($, 'ui'))?.tab).toBe('screen')
   })
 
   test('a browser screenshot in a tool result reaches the Screen tab', WITH_SPY, async ($, on) => {
@@ -429,11 +481,29 @@ describe('cockpit screen and bounds', () => {
     expect(screen?.error).toBeUndefined()
   })
 
+  test('Live stops after a few failed captures, and says so', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.command.run({ command: 'cockpit', args: 'live on', origin: ORIGIN, presentation: PRESENTATION })
+    await clock.settle()
+    expect((await peek($, 'screen'))?.isLive).toBe(true)
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    for (let i = 0; i < 2; i += 1) {
+      await ui.press({ key: 'snap' })
+      await clock.settle()
+    }
+    const screen = await peek($, 'screen')
+    expect(screen?.isLive).toBe(false)
+    expect(screen?.error).toContain('Live stopped after 3 failed captures')
+    await ui.unmount()
+  })
+
   test('the feed keeps a bounded window of events', { ...WITH_SPY, timeoutMs: 120_000 }, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', ($, e) => ({ result: { stdout: 'x'.repeat(9000), stderr: '', interrupted: false }, text: 'x' }))
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     for (let i = 0; i < 305; i += 1) await $.tool.call({ tool: 'Bash', command: `echo ${i}`, tool_use_id: `n${i}` })
+    await clock.settle()
     const feed = await peek($, 'feed')
     expect(feed).toHaveLength(300)
     expect(feed?.[0]?.id).toBe('n5')
@@ -441,8 +511,15 @@ describe('cockpit screen and bounds', () => {
     const last = await peek($, 'event', 'n304')
     expect((last?.output ?? '').length).toBeLessThan(4200)
     const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'terminal', component: 'Pane', requestId: 'cockpit', props: paneProps(30) })
-    expect(await ui.find({ key: 'more' })).toBeDefined()
+    expect(await ui.find({ text: /echo 304/ })).toBeDefined()
+    expect(await ui.find({ key: 'newer' })).toBeUndefined()
+    // Older rows come a page at a time, never all at once.
     await ui.press({ key: 'more' })
+    expect(await ui.find({ text: /echo 304/ })).toBeUndefined()
+    expect(await ui.find({ text: /echo 264/ })).toBeDefined()
+    expect(await peek($, 'ui')).toMatchObject({ limit: 40, offset: 40 })
+    await ui.press({ key: 'newer' })
+    expect(await ui.find({ text: /echo 304/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -478,12 +555,25 @@ describe('diff', () => {
       },
     })
     expect(parseSimctl(out)).toEqual({ kind: 'ios', udid: 'PHONE', name: 'iPhone 17' })
+    // An Apple TV alone is no screen to capture (simctl io hangs on it).
+    const tvOnly = JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.tvOS-26-0': [{ udid: 'TV', name: 'Apple TV', state: 'Booted' }] } })
+    expect(parseSimctl(tvOnly)).toBeUndefined()
+    // sips exits 0 on an input it cannot read: its warning is the failure.
+    expect(sipsError({ exitCode: 0, stdout: '', stderr: 'Warning: x.png not a valid file - skipping\n' })).toContain('not a valid file')
+    expect(sipsError({ exitCode: 0, stdout: '/a.png\n  /a.jpg\n', stderr: '' })).toBeUndefined()
+  })
+
+  test('counts read in the singular at one', async () => {
+    expect(statusLine({ ...EMPTY_STATS, calls: 1 }, 1, [])).toBe('◆ 1 call · ✎ 1 file +0 −0')
+    expect(statusLine({ ...EMPTY_STATS, calls: 2 }, 2, [])).toBe('◆ 2 calls · ✎ 2 files +0 −0')
+    // An idle bucket is a baseline, not a gap.
+    expect(sparkText([0, 4, 0, 1])).toBe('▁█▁▃')
   })
 })
 
 describe('cockpit robustness', () => {
   test('ANSI colours and control characters in tool output never break the pane', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', ($, e) =>
       e.tool_use_id === 'c1'
         ? { result: { stdout: '\x1b[32mok\x1b[0m done\r\nline\x07two\nprogress 10%\rprogress 100%', stderr: '', interrupted: false }, text: 'ok' }
@@ -492,6 +582,7 @@ describe('cockpit robustness', () => {
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await $.tool.call({ tool: 'Bash', command: 'npm run build', description: 'Build \x1b[1mbold\x1b[0m', tool_use_id: 'c1' })
     await $.tool.call({ tool: 'WebFetch', url: 'https://example.com', prompt: 'x', tool_use_id: 'c2' })
+    await clock.settle()
     const ev = await peek($, 'event', 'c1')
     expect(ev?.output).toBe('ok done\nlinetwo\nprogress 100%')
     expect(ev?.title).toBe('Build bold')
@@ -509,7 +600,7 @@ describe('cockpit robustness', () => {
   })
 
   test('a call that rejects is closed as interrupted and the running count comes back', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('tool.call', ($, e) => {
       if (e.tool_use_id === 'boom') throw new Error('worker gone')
       return { result: { stdout: 'fine', stderr: '', interrupted: false }, text: 'fine' }
@@ -517,12 +608,13 @@ describe('cockpit robustness', () => {
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await expect($.tool.call({ tool: 'Bash', command: 'x', tool_use_id: 'boom' })).rejects.toBeDefined()
     await $.tool.call({ tool: 'Bash', command: 'y', tool_use_id: 'ok1' })
+    await clock.settle()
     expect((await peek($, 'event', 'boom'))?.status).toBe('error')
     expect(await peek($, 'stats')).toMatchObject({ running: 0, calls: 2 })
   })
 
   test('a row left running is reconciled when its loop turn completes', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     on('turn.complete', ($, e) => ({ text: e.answer }))
     // A call whose end the module never sees in time (a reload mid-call).
     let release: () => void = () => undefined
@@ -543,6 +635,7 @@ describe('cockpit robustness', () => {
     // Its late end does not count it twice.
     release()
     await pending
+    await clock.settle()
     expect(await peek($, 'stats')).toMatchObject({ running: 0 })
   })
 
@@ -691,7 +784,7 @@ describe('cockpit robustness', () => {
   })
 
   test('fifty parallel agent calls fold into few writes and all count', WITH_SPY, async ($, on) => {
-    engine(on)
+    const { clock } = engine(on)
     let sets = 0
     on('state.set', ($, e, next) => {
       if (e.plugin === 'cockpit' && (e.key === 'stats' || e.key === 'feed')) sets += 1
@@ -703,6 +796,7 @@ describe('cockpit robustness', () => {
     await Promise.all(
       Array.from({ length: 50 }, (_, i) => $.tool.call({ tool: 'Bash', command: `echo ${i}`, tool_use_id: `p${i}`, agentId: `ag-${i % 5}` } as never)),
     )
+    await clock.settle()
     expect(await peek($, 'stats')).toMatchObject({ calls: 50, commands: 50, running: 0, streak: 50 })
     expect(await peek($, 'feed')).toHaveLength(50)
     expect((await peek($, 'agents'))?.reduce((n, a) => n + a.tools, 0)).toBe(50)

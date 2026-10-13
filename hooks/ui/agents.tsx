@@ -12,6 +12,7 @@ import {
   clip,
   fmtCount,
   fmtDur,
+  plural,
   statusGlyph,
   STATUS_COLOR,
 } from '../model'
@@ -23,7 +24,7 @@ const elapsed = (k: Kit, a: CockpitAgent): string =>
 
 /** Below this width the type chip goes: the title is what tells agents apart. */
 const TYPE_CHIP_MIN_W = 70
-/** Finished loose agents shown before the « N terminés » expander. */
+/** Finished loose agents shown before the « N more finished » expander. */
 const FINISHED_SHOWN = 6
 
 const shortType = (type: string): string => (type === 'general-purpose' ? 'gp' : clip(type, 14))
@@ -49,14 +50,9 @@ const agentRow = (k: Kit, a: CockpitAgent, depth: number, hideType?: string): Re
       <Text bold={a.status === 'running' || isOpen} dimColor={a.status === 'done' && !isOpen}>
         {fit(title, titleWidth)}
       </Text>
-      {showType ? <Text> </Text> : ''}
-      {showType ? (
-        <Text backgroundColor={agentHue(a.id)} color="#0b1020">
-          {` ${type} `}
-        </Text>
-      ) : (
-        ''
-      )}
+      {/* The agent's own hue on a glyph, never a chip: chips are categories. */}
+      {showType ? <Text color={agentHue(a.id)}> ⟡ </Text> : ''}
+      {showType ? <Text dimColor>{type}</Text> : ''}
       <Text dimColor> {tools} </Text>
       <Text color={a.status === 'running' ? AGENT_COLOR.running : undefined} dimColor={a.status !== 'running'}>
         {time}
@@ -85,7 +81,7 @@ export const agentRefs = (id: string, refs: readonly CockpitFeedRef[]): CockpitF
 
 const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): RenderElement => {
   const { Box, Button, Text } = k
-  const facts = [a.type, a.model, a.tokens !== undefined ? `${fmtCount(a.tokens)} tokens` : undefined, a.isBackground === true ? 'background' : undefined]
+  const facts = [a.type, a.model, a.tokens !== undefined ? plural(a.tokens, 'token', fmtCount(a.tokens)) : undefined, a.isBackground === true ? 'background' : undefined]
     .filter((x): x is string => x !== undefined && x !== '')
     .join(' · ')
   return (
@@ -127,7 +123,7 @@ const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): 
         </Box>
       ) : null}
       <Box key="act" flexDirection="row" marginTop={1}>
-        <Button key={`ag-filter-${a.id}`} label="Show its feed" onPress={() => setUi(k, u => ({ ...u, tab: 'feed', filter: a.id, expanded: null }))} />
+        <Button key={`ag-filter-${a.id}`} label="Show its feed" onPress={() => setUi(k, u => ({ ...u, tab: 'feed', filter: a.id, expanded: null, offset: 0 }))} />
       </Box>
     </Box>
   )
@@ -253,6 +249,8 @@ export const agentsView = (
     const ends = members.map(a => a.endedAt ?? (k.now > 0 ? k.now : a.startedAt))
     const span = members.length > 0 ? fmtDur(Math.max(...ends) - run.startedAt) : ''
     if (!isOpen) {
+      // The name takes what the glyphs and the counts leave.
+      const tail = ` ${finished}/${members.length}${fails > 0 ? ` · ${fails} ✗` : ''}${span !== '' ? ` · ${span}` : ''} ▸`
       return (
         <Button
           key={`wf-${runId}`}
@@ -263,19 +261,17 @@ export const agentsView = (
             <Text color={fails > 0 ? AGENT_COLOR.failed : AGENT_COLOR.done} bold>
               {fails > 0 ? '✗' : '✓'}{' '}
             </Text>
-            <Text color={CAT_COLOR.agent}>⚙ {clip(name, Math.max(10, k.W - 26))}</Text>
-            <Text dimColor>
-              {' '}
-              {finished}/{members.length}
-              {fails > 0 ? ` · ${fails} ✗` : ''}
-              {span !== '' ? ` · ${span}` : ''} ▸
-            </Text>
+            <Text color={CAT_COLOR.agent}>⚙ {clip(name, Math.max(10, k.W - 4 - tail.length))}</Text>
+            <Text dimColor>{tail}</Text>
           </Text>
         </Button>
       )
     }
     const rows: RenderElement[] = []
     for (const a of sorted) pushAgent(rows, a, 1, commonType)
+    const state = live > 0 ? `${live} running` : 'done'
+    const typeText = commonType !== undefined && commonType !== '' ? ` · ${shortType(commonType)}` : ''
+    const nameWidth = Math.max(10, k.W - 2 - state.length - typeText.length - (live === 0 ? 2 : 0) - 2)
     return (
       <Box key={`wf-${runId}`} flexDirection="column" marginTop={1}>
         <Box key="h" flexDirection="row" justifyContent="space-between">
@@ -286,13 +282,13 @@ export const agentsView = (
           >
             <Text wrap="truncate-end">
               <Text color={CAT_COLOR.agent} bold>
-                ⚙ {clip(name, Math.max(10, k.W - 34))}
+                ⚙ {clip(name, nameWidth)}
               </Text>
-              {commonType !== undefined && commonType !== '' ? <Text dimColor> · {shortType(commonType)}</Text> : ''}
+              {typeText !== '' ? <Text dimColor>{typeText}</Text> : ''}
               {live === 0 ? <Text dimColor> ▾</Text> : ''}
             </Text>
           </Button>
-          <Text color={live > 0 ? AGENT_COLOR.running : AGENT_COLOR.done}>{live > 0 ? `${live} running` : 'done'}</Text>
+          <Text color={live > 0 ? AGENT_COLOR.running : AGENT_COLOR.done}>{state}</Text>
         </Box>
         {progress(k, finished, members.length, Math.min(24, Math.max(6, k.W - 16)))}
         {rows}
@@ -342,7 +338,7 @@ const mainRow = (k: Kit, stats: CockpitStats, calls: number): RenderElement => {
       <Text bold>Main session</Text>
       <Text dimColor>
         {' '}
-        · {calls} calls · {stats.turns} turns
+        · {plural(calls, 'call')} · {plural(stats.turns, 'turn')}
       </Text>
     </Text>
   )

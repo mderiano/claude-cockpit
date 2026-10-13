@@ -9,6 +9,7 @@ import {
   fmtCount,
   fmtDur,
   MUTED,
+  plural,
   REMOVED,
   sparkSeries,
   sparkText,
@@ -49,11 +50,15 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
   const running = agents.filter(a => a.status === 'running').length
   const finished = agents.filter(a => a.status === 'done' || a.status === 'idle').length
   const failed = agents.filter(a => a.status === 'failed' || a.status === 'killed').length
-  const elapsed = stats.startedAt > 0 && k.now > 0 ? fmtDur(k.now - stats.startedAt) : '—'
+  const since = k.now - stats.startedAt
+  const elapsed = stats.startedAt > 0 && k.now > 0 ? (since < 1000 ? '0s' : fmtDur(since)) : '—'
   const isBusy = stats.isWorking || stats.running > 0 || running > 0
   const pulse = Math.floor(k.now / 1000) % 2 === 0
   const series = sparkSeries(stats, k.now)
   const isNarrow = k.W < 56
+  // Narrow, the text strip keeps the latest whole minutes (4 buckets each),
+  // and its label says the span it actually draws.
+  const drawn = Svg === undefined && isNarrow ? Math.min(SPARK_LEN, Math.max(8, Math.floor((k.W - 30) / 4) * 4)) : SPARK_LEN
 
   const chips: RenderElement[] = [
     chip(k, 'c-calls', `⚡ ${fmtCount(stats.calls)}`, ACCENT),
@@ -80,7 +85,7 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
         </Text>
         <Text dimColor>
           ⏱ {elapsed}
-          {stats.turns > 0 ? ` · ${stats.turns} turns` : ''}
+          {stats.turns > 0 ? ` · ${plural(stats.turns, 'turn')}` : ''}
         </Text>
       </Box>
       <Box key="h-chips" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
@@ -103,11 +108,11 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
           />
         ) : (
           <Text key="spark" color={ACCENT}>
-            {sparkText(isNarrow ? series.slice(-Math.max(8, k.W - 30)) : series)}
+            {sparkText(series.slice(-drawn))}
           </Text>
         )}
         <Text key="spark-l" dimColor>
-          {`${Math.round((SPARK_LEN * SPARK_MS) / 60000)} min`}
+          {`${Math.round((drawn * SPARK_MS) / 60000)} min`}
           {stats.bestStreak >= 5 ? ` · record ×${stats.bestStreak}` : ''}
         </Text>
       </Box>
@@ -138,7 +143,7 @@ export const tabs = (
             hotkey={t.hotkey}
             variant={isActive ? 'primary' : 'secondary'}
             onPress={() => {
-              setUi(k, u => ({ ...u, tab: t.tab }))
+              setUi(k, u => ({ ...u, tab: t.tab, offset: 0 }))
               if (t.tab === 'screen') onScreen()
             }}
           >

@@ -17,6 +17,8 @@ export const MAX_WORKFLOWS = 20
 export const MAX_OUTPUT = 4000
 export const MAX_INPUT = 2000
 export const MAX_DIFF = 12000
+/** Feed rows drawn at once: a page, so the tree stays far under the text budget. */
+export const FEED_PAGE = 40
 export const SPARK_MS = 15_000
 export const SPARK_LEN = 24
 export const PANE = 'cockpit'
@@ -48,7 +50,8 @@ export const EMPTY_UI: CockpitUi = {
   expanded: null,
   file: null,
   agent: null,
-  limit: 40,
+  limit: FEED_PAGE,
+  offset: 0,
   openRuns: [],
   showAllAgents: false,
   autoOpened: false,
@@ -279,6 +282,10 @@ export const fmtAgo = (at: number | undefined, now: number): string => {
 export const fmtCount = (n: number): string =>
   n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 
+/** `1 call`, `2 calls`: the count (as `shown` when given) and its noun. */
+export const plural = (n: number, noun: string, shown: string = String(n)): string =>
+  `${shown} ${noun}${n === 1 ? '' : 's'}`
+
 /** A path shown relative to the session's folder, the rest kept short. */
 export const shortPath = (path: string, cwd: string, max: number): string => {
   let p = path
@@ -304,9 +311,10 @@ export const dirname = (path: string): string => {
 }
 
 const BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+/** One block per bucket; an empty bucket is the baseline, so the strip reads as a chart. */
 export const sparkText = (values: readonly number[]): string => {
   const max = Math.max(1, ...values)
-  return values.map(v => (v === 0 ? ' ' : BLOCKS[Math.min(7, Math.floor((v / max) * 7.999))] ?? '▁')).join('')
+  return values.map(v => (v === 0 ? '▁' : BLOCKS[1 + Math.min(6, Math.floor((v / max) * 6.999))] ?? '▂')).join('')
 }
 
 /** The spark buckets as of `now`, shifted so the last one is the current. */

@@ -6,7 +6,7 @@ import type { ToolCallResult } from 'claude-code'
 import type { CockpitAgent, CockpitAgentStatus, CockpitStats } from '../types'
 import { createdHunks, diffTexts, fromStructuredPatch, lineOf } from './diff'
 import type { Hunk } from './diff'
-import { basename, clean, clip, excerpt, firstLine, fmtCount, MAX_AGENTS, MAX_OUTPUT, SPARK_LEN, SPARK_MS, TEST_RE } from './model'
+import { basename, clean, clip, excerpt, firstLine, fmtCount, MAX_AGENTS, MAX_OUTPUT, plural, SPARK_LEN, SPARK_MS, TEST_RE } from './model'
 
 
 
@@ -95,7 +95,7 @@ export const describe = (input: Record<string, unknown>): Described => {
       str(a.action) ?? str(a.url) ?? str(a.command) ?? str(a.query) ?? str(a.text) ?? str(a.path) ?? str(a.name)
     const hasBatch = Array.isArray(a.actions)
     return {
-      title: `${name.replace(/_/g, ' ')}${key !== undefined ? ` · ${clip(key, 80)}` : hasBatch ? ` · ${(a.actions as unknown[]).length} actions` : ''}`,
+      title: `${name.replace(/_/g, ' ')}${key !== undefined ? ` · ${clip(key, 80)}` : hasBatch ? ` · ${plural((a.actions as unknown[]).length, 'action')}` : ''}`,
       detail: pretty,
     }
   }
@@ -131,13 +131,19 @@ export const outputOf = (tool: string, r: ToolCallResult): { output?: string; ex
   return { output: r.text !== undefined ? excerpt(clean(r.text), MAX_OUTPUT) : undefined }
 }
 
-export type FileChange = { path: string; hunks: Hunk[]; isCreated?: boolean }
+/**
+ * One file a call changed. `isTooLarge`: the result carried no diff (the old
+ * content was too large), `added` / `removed` then what it counted, if anything.
+ */
+export type FileChange = { path: string; hunks: Hunk[]; isCreated?: boolean; isTooLarge?: boolean; added?: number; removed?: number }
 
 /** The file changes a finished call made, from what its result carries. */
 export const changesOf = (e: Record<string, unknown>, r: ToolCallResult): FileChange[] => {
   if (r.deny !== undefined || r.isError === true) return []
   const tool = String(e.tool)
   const res = obj(r.result)
+  // Held for the machine owner to review: the file is unchanged.
+  if (res.staged === true) return []
   if (tool === 'Edit' || tool === 'MultiEdit') {
     const path = str(res.filePath) ?? str(e.file_path) ?? ''
     const patch = fromStructuredPatch(res.structuredPatch)
@@ -161,9 +167,14 @@ export const changesOf = (e: Record<string, unknown>, r: ToolCallResult): FileCh
     const path = str(res.filePath) ?? str(e.file_path) ?? ''
     const content = str(res.content) ?? str(e.content) ?? ''
     const original = res.originalFile
-    if (res.type === 'create' || original === null) return [{ path, hunks: createdHunks(content), isCreated: true }]
+    if (res.type === 'create') return [{ path, hunks: createdHunks(content), isCreated: true }]
     const patch = fromStructuredPatch(res.structuredPatch)
     if (patch !== undefined && patch.length > 0) return [{ path, hunks: patch }]
+    if (original === null) {
+      // An update whose old content was too large to include: no diff to show.
+      const git = obj(res.gitDiff)
+      return [{ path, hunks: [], isTooLarge: true, added: num(git.additions) ?? 0, removed: num(git.deletions) ?? 0 }]
+    }
     return [{ path, hunks: diffTexts(str(original) ?? '', content) }]
   }
   if (tool === 'NotebookEdit') {
@@ -254,8 +265,8 @@ export const agentAnswer = (result: Record<string, unknown>): string => {
 /** The one line under the prompt. */
 export const statusLine = (stats: CockpitStats, files: number, agents: readonly CockpitAgent[]): string => {
   const running = agents.filter(a => a.status === 'running').length
-  const parts = [`◆ ${fmtCount(stats.calls)} call${stats.calls === 1 ? "" : "s"}`]
-  if (files > 0) parts.push(`✎ ${files} files +${fmtCount(stats.added)} −${fmtCount(stats.removed)}`)
+  const parts = [`◆ ${plural(stats.calls, 'call', fmtCount(stats.calls))}`]
+  if (files > 0) parts.push(`✎ ${plural(files, 'file')} +${fmtCount(stats.added)} −${fmtCount(stats.removed)}`)
   if (agents.length > 0) parts.push(`🤖 ${running} running / ${agents.length}`)
   if (stats.errors > 0) parts.push(`✗ ${stats.errors}`)
   if (stats.streak >= 5) parts.push(`🔥 ×${stats.streak}`)

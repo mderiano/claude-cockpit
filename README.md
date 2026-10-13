@@ -13,7 +13,7 @@ Le cockpit se contente d’observer. Il ne bloque jamais un appel d’outil et n
 - **App de bureau (onglet Code)** : le panneau s’ouvre tout seul en barre latérale, une fois par session, dès que l’app se connecte. Pour couper ça, désactive l’option `autoOpen` dans la configuration du plugin.
 - **Partout** : la commande `/cockpit [onglet]` ouvre le panneau, ou lui donne le focus s’il est déjà ouvert.
   - `/cockpit feed`, `files`, `agents` ou `screen` ouvre le panneau sur l’onglet choisi.
-  - `/cockpit live` active ou coupe la capture en direct de l’écran.
+  - `/cockpit live` active ou coupe la capture en direct de l’écran ; `/cockpit live on` ou `live off` la règle. Elle s’arrête d’elle-même après 3 captures ratées de suite.
   - `/cockpit close` ferme le panneau.
 
 ## En-tête

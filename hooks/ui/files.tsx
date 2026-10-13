@@ -2,7 +2,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { CockpitAgent, CockpitChange, CockpitFile } from '../../types'
-import { ADDED, agentHue, basename, CAT_COLOR, clip, dirname, fmtAgo, REMOVED, shortPath } from '../model'
+import { ADDED, agentHue, basename, CAT_COLOR, clip, dirname, fmtAgo, plural, REMOVED, shortPath } from '../model'
 import { agentLabel } from './feed'
 import { empty, fit, sectionTitle, setUi } from './kit'
 import type { Kit } from './kit'
@@ -75,7 +75,7 @@ const changeBlock = (k: Kit, path: string, c: CockpitChange, agents: readonly Co
         <Code key="d" source={c.diff} format="diff" path={path} wrap="truncate-end" />
       ) : (
         <Text key="d" dimColor italic>
-          (no lines changed)
+          {c.isTooLarge === true ? '(file too large for a diff)' : '(no lines changed)'}
         </Text>
       )}
     </Box>
@@ -107,7 +107,7 @@ export const filesView = (
     <Box key="files" flexDirection="column">
       <Box key="sum" flexDirection="row" columnGap={1} marginTop={1}>
         <Text bold>
-          {files.length} file{files.length > 1 ? 's' : ''}
+          {plural(files.length, 'file')}
         </Text>
         <Text color={ADDED} bold>
           +{totalAdded}
@@ -131,7 +131,7 @@ export const filesView = (
             'sel-t',
             fit(basename(selected.path), Math.max(8, k.W - 18)).trimEnd(),
             CAT_COLOR.edit,
-            `${history.length} change${history.length > 1 ? 's' : ''}`,
+            plural(history.length, 'change'),
           )}
           <Text key="sel-p" dimColor wrap="truncate-start">
             {dirname(selected.path)}
@@ -139,7 +139,7 @@ export const filesView = (
           {recent.map((c, i) => changeBlock(k, selected.path, c, agents, i))}
           {history.length > MAX_DIFFS ? (
             <Text key="older" dimColor>
-              … {history.length - MAX_DIFFS} older changes
+              … {plural(history.length - MAX_DIFFS, 'older change')}
             </Text>
           ) : null}
         </Box>

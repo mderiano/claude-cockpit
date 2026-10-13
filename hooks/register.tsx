@@ -59,7 +59,7 @@ import {
   PANE,
   prettyInput,
 } from './model'
-import { findImages, firstErrorLine, imageSize, parseAdb, parseSimctl } from './screen'
+import { findImages, firstErrorLine, imageSize, parseAdb, parseSimctl, sipsError } from './screen'
 import type { Device } from './screen'
 import { agentRefs, agentsView } from './ui/agents'
 import { feedView, visibleRefs } from './ui/feed'
@@ -207,6 +207,19 @@ let tickCount = 0
 let isTicking = false
 let isCapturing = false
 let lastStatus = ''
+/** The device the last capture found, probed again only after a failure. */
+let device: Device | undefined
+/** Captures failed in a row: Live stops at LIVE_MAX_FAILURES. */
+let captureFailures = 0
+/** Device tools this session showed missing (the spawn itself rejected). */
+const missingTools = new Set<string>()
+/** The newest tool screenshot waiting to be taken; one is taken at a time. */
+type ToolImage = { image: { data: string; mime: string }; label: string }
+let pendingImage: ToolImage | undefined
+let isTakingImage = false
+
+const LIVE_MAX_FAILURES = 3
+const NO_DEVICE = 'No iOS simulator or Android emulator running.'
 
 // ================================================================ screen capture
 /** Where frames are written: $TMPDIR, never the plugin's (watched) folder. */
@@ -227,13 +240,20 @@ const tmpBase = async ($: $T): Promise<string> => {
 
 const setScreen = ($: $T, change: (s: CockpitScreen) => CockpitScreen) => update($, screenAtom, change)
 
+/** A spawn that rejected for want of the command, not for running too long. */
+const isMissing = (err: unknown): boolean => !/time/i.test(err instanceof Error ? err.message : String(err))
+
 const findDevice = async ($: $T): Promise<Device | undefined> => {
-  try {
-    const r = await $.process.run(['xcrun', 'simctl', 'list', 'devices', 'booted', '-j'], { timeoutMs: 10_000 })
-    const sim = r.exitCode === 0 ? parseSimctl(r.stdout) : undefined
-    if (sim !== undefined) return sim
-  } catch {
-    // no Xcode: try Android
+  if (device !== undefined) return device
+  if (!missingTools.has('xcrun')) {
+    try {
+      const r = await $.process.run(['xcrun', 'simctl', 'list', 'devices', 'booted', '-j'], { timeoutMs: 10_000 })
+      const sim = r.exitCode === 0 ? parseSimctl(r.stdout) : undefined
+      if (sim !== undefined) return sim
+    } catch (err) {
+      // no Xcode: not asked again this session; try Android
+      if (isMissing(err)) missingTools.add('xcrun')
+    }
   }
   const candidates = ['adb']
   try {
@@ -245,11 +265,12 @@ const findDevice = async ($: $T): Promise<Device | undefined> => {
     // the PATH alone
   }
   for (const adb of candidates) {
+    if (missingTools.has(adb)) continue
     try {
       const r = await $.process.run([adb, 'devices'], { timeoutMs: 8000 })
       if (r.exitCode === 0) return parseAdb(r.stdout, adb)
-    } catch {
-      continue
+    } catch (err) {
+      if (isMissing(err)) missingTools.add(adb)
     }
   }
   return undefined
@@ -265,7 +286,9 @@ const toSvgFrame = async ($: $T, png: string, jpg: string): Promise<{ b64: strin
       ['sips', '-Z', size, '-s', 'format', 'jpeg', '-s', 'formatOptions', quality, png, '--out', jpg],
       { timeoutMs: 15_000 },
     )
-    if (r.exitCode !== 0) throw new Error(firstErrorLine(r.stderr || r.stdout) || 'sips failed')
+    // Else `jpg` still holds the previous frame.
+    const failed = sipsError(r)
+    if (failed !== undefined) throw new Error(failed)
     const { base64 } = await $.fs.read(jpg, { as: 'bytes' })
     if (base64.length <= MAX_SVG_B64) {
       const dims = imageSize(base64)
@@ -284,37 +307,32 @@ const captureDevice = async ($: $T): Promise<void> => {
     const base = await tmpBase($)
     const png = `${base}device.png`
     const jpg = `${base}device.jpg`
-    const device = await findDevice($)
-    if (device === undefined) {
-      await setScreen($, s => ({
-        ...s,
-        isBusy: false,
-        error: s.source === 'tool' ? undefined : 'No iOS simulator or Android emulator running.',
-      }))
-      return
-    }
+    const found = await findDevice($)
+    if (found === undefined) throw new Error(NO_DEVICE)
+    device = found
     let label: string
-    if (device.kind === 'ios') {
-      const r = await $.process.run(['xcrun', 'simctl', 'io', device.udid, 'screenshot', '--type=png', png], {
+    if (found.kind === 'ios') {
+      const r = await $.process.run(['xcrun', 'simctl', 'io', found.udid, 'screenshot', '--type=png', png], {
         timeoutMs: 15_000,
       })
       if (r.exitCode !== 0) throw new Error(firstErrorLine(r.stderr || r.stdout) || `simctl failed (${r.exitCode})`)
-      label = clean(device.name)
+      label = clean(found.name)
     } else {
       const remote = '/sdcard/cockpit-frame.png'
-      const shot = await $.process.run([device.adb, '-s', device.serial, 'shell', 'screencap', '-p', remote], {
+      const shot = await $.process.run([found.adb, '-s', found.serial, 'shell', 'screencap', '-p', remote], {
         timeoutMs: 15_000,
       })
       if (shot.exitCode !== 0) throw new Error(firstErrorLine(shot.stderr || shot.stdout) || 'screencap failed')
-      const pull = await $.process.run([device.adb, '-s', device.serial, 'pull', remote, png], { timeoutMs: 15_000 })
+      const pull = await $.process.run([found.adb, '-s', found.serial, 'pull', remote, png], { timeoutMs: 15_000 })
       if (pull.exitCode !== 0) throw new Error(firstErrorLine(pull.stderr || pull.stdout) || 'adb pull failed')
-      label = `Android ${device.serial}`
+      label = `Android ${found.serial}`
     }
     const frame = await toSvgFrame($, png, jpg)
     const at = await $.clock.now()
+    captureFailures = 0
     await setScreen($, s => ({
       ...s,
-      source: device.kind,
+      source: found.kind,
       label,
       b64: frame.b64,
       mime: 'image/jpeg',
@@ -327,8 +345,24 @@ const captureDevice = async ($: $T): Promise<void> => {
       isBusy: false,
     }))
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    await quiet(() => setScreen($, s => ({ ...s, isBusy: false, error: clean(message).slice(0, 200) })))
+    // The device may be gone: look again next time; Live gives up after a few.
+    device = undefined
+    captureFailures += 1
+    const message = clean(err instanceof Error ? err.message : String(err)).slice(0, 200)
+    const stops = captureFailures >= LIVE_MAX_FAILURES
+    await quiet(() =>
+      setScreen($, s => ({
+        ...s,
+        isBusy: false,
+        isLive: stops ? false : s.isLive,
+        error:
+          stops && s.isLive
+            ? `${message} Live stopped after ${LIVE_MAX_FAILURES} failed captures.`
+            : message === NO_DEVICE && s.source === 'tool'
+              ? undefined
+              : message,
+      })),
+    )
   } finally {
     isCapturing = false
   }
@@ -371,7 +405,7 @@ const takeToolImage = async ($: $T, image: { data: string; mime: string }, label
       else if (needsFile) {
         const png = `${base}tool.png`
         const r = await $.process.run(['sips', '-s', 'format', 'png', raw, '--out', png], { timeoutMs: 15_000 })
-        if (r.exitCode === 0) pngPath = png
+        if (sipsError(r) === undefined) pngPath = png
       }
       if (needsShrink) {
         const frame = await toSvgFrame($, raw, `${base}tool.jpg`)
@@ -399,9 +433,32 @@ const takeToolImage = async ($: $T, image: { data: string; mime: string }, label
   }
 }
 
-const toggleLive = async ($: $T): Promise<void> => {
-  const next = await update($, screenAtom, s => ({ ...s, isLive: !s.isLive }))
-  if (next.isLive) await captureDevice($)
+/**
+ * Tool screenshots one at a time, through the same files: a frame arriving
+ * while one is taken replaces any still waiting (only the newest shows).
+ */
+const queueToolImage = async ($: $T, image: { data: string; mime: string }, label: string): Promise<void> => {
+  pendingImage = { image, label }
+  if (isTakingImage) return
+  isTakingImage = true
+  try {
+    for (let next: ToolImage | undefined = pendingImage; next !== undefined; next = pendingImage as ToolImage | undefined) {
+      pendingImage = undefined
+      await takeToolImage($, next.image, next.label)
+    }
+  } finally {
+    isTakingImage = false
+  }
+}
+
+/** Turns Live on or off; on, the caller takes the first frame. */
+const setLive = async ($: $T, isLive: (was: boolean) => boolean): Promise<boolean> => {
+  const next = await update($, screenAtom, s => ({ ...s, isLive: isLive(s.isLive) }))
+  if (next.isLive) {
+    captureFailures = 0
+    ensureTicker($)
+  }
+  return next.isLive
 }
 
 // ================================================================ status, milestones, ticker
@@ -435,19 +492,31 @@ const markNow = async ($: $T, now: number): Promise<void> => {
   await $.state.set({ plugin: 'cockpit', key: 'now' }, now)
 }
 
-/** Once a second: the clock for elapsed times, live capture, agent statuses. */
+/**
+ * Once a second while the pane is open: the clock for elapsed times, live
+ * capture, agent statuses. Stops once the pane is closed; whatever opens it
+ * again (or a tool call) starts it.
+ */
 const tick = async ($: $T): Promise<void> => {
   if (isTicking) return
   isTicking = true
   tickCount += 1
   try {
     const panes = await $.ui.panes()
-    if (!panes.some(p => p.id === PANE && p.isShown && p.isPlaced)) return
+    const pane = panes.find(p => p.id === PANE)
+    if (pane === undefined) {
+      ticker?.cancel()
+      ticker = undefined
+      return
+    }
+    if (!pane.isShown || !pane.isPlaced) return
     const stats = await read($, statsAtom)
     const agents = await read($, agentsAtom)
     const ui = await read($, uiAtom)
     const isBusy = stats.running > 0 || stats.isWorking || agents.some(a => a.status === 'running')
-    if (isBusy || tickCount % 10 === 0) await markNow($, await $.clock.now())
+    // Each write of `now` redraws the pane; on the Screen tab that resends
+    // the frame, and nothing there needs the second: every 10 s will do.
+    if ((isBusy && ui.tab !== 'screen') || tickCount % 10 === 0) await markNow($, await $.clock.now())
     if (ui.tab === 'screen' && tickCount % 2 === 0) {
       const screen = await read($, screenAtom)
       if (screen.isLive) void captureDevice($)
@@ -548,7 +617,8 @@ const recordChanges = async (
   let removed = 0
   for (const change of changes) {
     if (change.path === '') continue
-    const text = renderHunks(change.hunks, MAX_DIFF)
+    const rendered = renderHunks(change.hunks, MAX_DIFF)
+    const text = { ...rendered, added: change.added ?? rendered.added, removed: change.removed ?? rendered.removed }
     added += text.added
     removed += text.removed
     const entry: CockpitChange = {
@@ -560,6 +630,7 @@ const recordChanges = async (
       added: text.added,
       removed: text.removed,
       isTruncated: text.isTruncated ? true : undefined,
+      isTooLarge: change.isTooLarge,
     }
     await update($, { plugin: 'cockpit', key: 'changes', id: change.path }, list =>
       [...(list ?? []).filter(one => one.id !== entry.id), entry].slice(-MAX_CHANGES_PER_FILE),
@@ -608,7 +679,8 @@ const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallR
     removed: changes.length > 0 ? counts.removed : undefined,
     filePath: ev.filePath ?? changes[0]?.path,
   }
-  await $.state.set({ plugin: 'cockpit', key: 'event', id: ev.id }, done)
+  // Gone (evicted from the feed, or a /clear) while it ran: not written back.
+  if (current !== null && current !== undefined) await $.state.set({ plugin: 'cockpit', key: 'event', id: ev.id }, done)
 
   const res = obj(r.result)
   // A main-loop Agent call that ran in the foreground settles its agent here.
@@ -730,7 +802,7 @@ const resetForClear = async ($: $T, deadline: () => boolean): Promise<void> => {
   await agentsQ($, () => [])
   await update($, workflowsAtom, () => [])
   await setScreen($, s => ({ ...EMPTY_SCREEN, isLive: s.isLive }))
-  await update($, uiAtom, u => ({ ...u, filter: 'all', expanded: null, file: null, agent: null, limit: EMPTY_UI.limit, openRuns: [], showAllAgents: false }))
+  await update($, uiAtom, u => ({ ...u, filter: 'all', expanded: null, file: null, agent: null, limit: EMPTY_UI.limit, offset: 0, openRuns: [], showAllAgents: false }))
   await $.state.set({ plugin: 'cockpit', key: 'now' }, now)
   lastStatus = ''
   // The members the lists pointed at, while the end's short bound allows.
@@ -770,6 +842,7 @@ const TAB_WORDS: Record<string, CockpitTab> = {
   sim: 'screen',
   live: 'screen',
 }
+const COMMAND_WORDS = 'feed, files, agents, screen, live [on|off], close'
 
 // ================================================================ registration
 export const register: Register = (on, options) => {
@@ -782,7 +855,7 @@ export const register: Register = (on, options) => {
       await $.command.register({
         name: 'cockpit',
         description: 'Live view of what Claude is doing: commands, diffs, agents, screen',
-        argumentHint: '[feed|files|agents|screen|live|close]',
+        argumentHint: '[feed|files|agents|screen|live [on|off]|close]',
         immediate: true,
       })
       const now = await $.clock.now()
@@ -791,6 +864,8 @@ export const register: Register = (on, options) => {
       // left running in the main loop can no longer end through it.
       await reconcile($, undefined)
       await markNow($, now)
+      // Where frames go, settled once before any capture can race for it.
+      await tmpBase($)
       ensureTicker($)
       // The desktop app runs the session headless (surface null here) and
       // attaches later: it opens from session.attach. The terminal says
@@ -844,8 +919,14 @@ export const register: Register = (on, options) => {
       if (ev !== undefined) await quiet(() => onToolAbort($, ev, err))
       throw err
     }
+    // The result goes to the model now; the bookkeeping (a score of state
+    // round-trips) follows once this dispatch resolved.
     const ev = await started
-    if (ev !== undefined) await quiet(() => onToolEnd($, e, ev, r))
+    try {
+      if (ev !== undefined) $.clock.after(0, () => void quiet(() => onToolEnd($, e, ev, r)))
+    } catch {
+      // a lost end: the turn's reconcile closes the row
+    }
     return r
   }).catch(($, e, next) => next(e))
 
@@ -931,7 +1012,7 @@ export const register: Register = (on, options) => {
         const last = images[images.length - 1]
         if (last !== undefined) {
           const label = origin.tool.split('__').slice(1).join(' · ').replace(/_/g, ' ')
-          $.clock.after(0, () => void takeToolImage($, last, label))
+          $.clock.after(0, () => void queueToolImage($, last, label))
         }
       }
     } catch {
@@ -940,21 +1021,29 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // The pane is the answer: no transcript row (the model would read it too),
+  // save to say what went wrong.
   on('command.run', { command: 'cockpit' }, async ($, e) => {
-    ensureTicker($)
-    const word = e.args.trim().toLowerCase().split(/\s+/)[0] ?? ''
+    const [word = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
     if (word === 'close' || word === 'off') {
       await $.ui.close({ id: PANE })
-      return { text: 'Cockpit closed.' }
+      return {}
     }
     const tab = TAB_WORDS[word]
-    if (tab !== undefined) await update($, uiAtom, u => ({ ...u, tab }))
-    if (word === 'live') await update($, screenAtom, s => ({ ...s, isLive: !s.isLive }))
+    const live = word !== 'live' ? undefined : arg === 'on' ? true : arg === 'off' ? false : 'toggle'
+    if (word !== '' && (tab === undefined || (word === 'live' && arg !== '' && live === 'toggle'))) {
+      return { text: `/cockpit: unknown "${clip(clean(e.args.trim()), 40)}". Try ${COMMAND_WORDS}.` }
+    }
+    ensureTicker($)
+    if (tab !== undefined) await update($, uiAtom, u => ({ ...u, tab, offset: 0 }))
     const opened = await $.ui.open({ id: PANE, title: 'Cockpit', focus: true })
+    if (!opened.isPlaced) return { text: `Cockpit could not open here: ${opened.reason}` }
+    if (live !== undefined) {
+      const isLive = await setLive($, was => (live === 'toggle' ? !was : live))
+      $.ui.toast(isLive ? 'Cockpit · Live ● on' : 'Cockpit · Live ○ off', { timeoutMs: 3000 })
+    }
     if (tab === 'screen') $.clock.after(0, () => void captureDevice($))
-    const ui = await read($, uiAtom)
-    if (opened.isPlaced) return { text: `Cockpit opened (${ui.tab}).` }
-    return { text: `Cockpit could not open here: ${opened.reason}` }
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: 'cockpit' }, async ($, e) => {
@@ -984,7 +1073,9 @@ export const register: Register = (on, options) => {
         void update($, uiAtom, change).catch(() => undefined)
       },
       toggleLive: () => {
-        void toggleLive($)
+        void setLive($, was => !was)
+          .then(isLive => (isLive ? captureDevice($) : undefined))
+          .catch(() => undefined)
       },
       capture: () => {
         void captureDevice($)
@@ -998,7 +1089,8 @@ export const register: Register = (on, options) => {
       Svg: tables.Svg,
       Image: tables.Image,
       surface: e.surface,
-      W: Math.max(24, e.props.bodyColumns - 2),
+      // A desktop draws each row as its native button: leave room for its chrome.
+      W: Math.max(24, e.props.bodyColumns - (e.surface === 'terminal' ? 2 : 6)),
       H: Math.max(10, e.props.scroll.bodyRows),
       now,
       cwd,
@@ -1031,7 +1123,7 @@ export const register: Register = (on, options) => {
     } else if (ui.tab === 'screen') {
       body = screenView(k, screen)
     } else {
-      const { shown, total } = visibleRefs(ui, refs)
+      const { shown, total, offset } = visibleRefs(ui, refs)
       const events: CockpitEvent[] = []
       for (const ref of shown) {
         const ev = await read($, { plugin: 'cockpit', key: 'event', id: ref.id })
@@ -1043,7 +1135,7 @@ export const register: Register = (on, options) => {
         const list = await read($, { plugin: 'cockpit', key: 'changes', id: open.filePath })
         change = (list ?? []).find(c => c.id === open.id)
       }
-      body = feedView(k, refs, agents, events, total, change)
+      body = feedView(k, refs, agents, events, total, offset, change)
     }
     const { Box } = els
     return (

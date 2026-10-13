@@ -8,6 +8,8 @@ import {
   CAT_COLOR,
   CAT_LABEL,
   clip,
+  dirname,
+  FEED_PAGE,
   fmtDur,
   REMOVED,
   shortPath,
@@ -24,6 +26,9 @@ export const agentLabel = (agents: readonly CockpitAgent[], id: string): string 
   return a.workflowIndex !== undefined ? `#${a.workflowIndex} ${base}` : base
 }
 
+/** Below this width a row's agent tag shrinks to its glyph and run index. */
+const TAG_MIN_W = 60
+
 const filterRow = (k: Kit, refs: readonly CockpitFeedRef[], agents: readonly CockpitAgent[]): RenderElement => {
   const { Box, Button, Text } = k
   const recent: string[] = []
@@ -35,7 +40,7 @@ const filterRow = (k: Kit, refs: readonly CockpitFeedRef[], agents: readonly Coc
   const option = (key: string, value: string, label: string, color?: string) => {
     const isOn = k.ui.filter === value
     return (
-      <Button key={key} plain onPress={() => setUi(k, u => ({ ...u, filter: value, expanded: null }))}>
+      <Button key={key} plain onPress={() => setUi(k, u => ({ ...u, filter: value, expanded: null, offset: 0 }))}>
         <Text color={isOn ? (color ?? '#e2e8f0') : undefined} bold={isOn} dimColor={!isOn} underline={isOn}>
           {isOn ? '◉ ' : '○ '}
           {label}
@@ -55,14 +60,27 @@ const filterRow = (k: Kit, refs: readonly CockpitFeedRef[], agents: readonly Coc
 const duration = (k: Kit, ev: CockpitEvent): string =>
   ev.status === 'running' ? fmtDur(Math.max(0, k.now - ev.startedAt)) : fmtDur((ev.endedAt ?? ev.startedAt) - ev.startedAt)
 
-const row = (k: Kit, ev: CockpitEvent, agents: readonly CockpitAgent[], showAgent: boolean): RenderElement => {
+/** The tag after a row's title: the agent's label, or narrow, its run index alone. */
+const agentTag = (k: Kit, agents: readonly CockpitAgent[], id: string): string => {
+  if (k.W >= TAG_MIN_W) return clip(agentLabel(agents, id), 14)
+  const index = agents.find(one => one.id === id)?.workflowIndex
+  return index !== undefined ? `#${index}` : ''
+}
+
+const row = (
+  k: Kit,
+  ev: CockpitEvent,
+  agents: readonly CockpitAgent[],
+  showAgent: boolean,
+  showTail: boolean,
+): RenderElement => {
   const { Box, Button, Text } = k
   const color = CAT_COLOR[ev.cat]
   const dur = duration(k, ev)
-  const tag = showAgent && ev.agentId !== undefined ? clip(agentLabel(agents, ev.agentId), 14) : ''
+  const tag = showAgent && ev.agentId !== undefined ? agentTag(k, agents, ev.agentId) : undefined
   const label = CAT_LABEL[ev.cat]
   // glyph(2) + chip(label+2) + gap + title + tag + dur
-  const fixed = 2 + label.length + 3 + (tag !== '' ? tag.length + 3 : 0) + dur.length + 1
+  const fixed = 2 + label.length + 3 + (tag !== undefined ? tag.length + 3 : 0) + dur.length + 1
   const titleWidth = Math.max(8, k.W - fixed)
   const isOpen = k.ui.expanded === ev.id
   const lines: RenderElement[] = []
@@ -74,15 +92,17 @@ const row = (k: Kit, ev: CockpitEvent, agents: readonly CockpitAgent[], showAgen
       </Text>,
     )
   } else if (ev.filePath !== undefined && ev.cat === 'edit') {
+    // The title is the file's name: this line says where it lives.
+    const dir = dirname(ev.filePath)
     lines.push(
       <Text key="d" dimColor wrap="truncate-end">
-        {shortPath(ev.filePath, k.cwd, k.W - indent - 14)}
+        {dir === '' || dir === k.cwd ? './' : `${shortPath(dir, k.cwd, k.W - indent - 15)}/`}
         {ev.added !== undefined ? <Text color={ADDED}> +{ev.added}</Text> : ''}
         {ev.removed !== undefined ? <Text color={REMOVED}> −{ev.removed}</Text> : ''}
       </Text>,
     )
   }
-  if (ev.status !== 'running' && ev.output !== undefined && ev.cat === 'shell' && !isOpen) {
+  if (ev.status !== 'running' && ev.output !== undefined && ev.cat === 'shell' && !isOpen && showTail) {
     const tail = ev.output.trimEnd().split('\n').slice(-2)
     for (const [i, line] of tail.entries()) {
       lines.push(
@@ -110,7 +130,7 @@ const row = (k: Kit, ev: CockpitEvent, agents: readonly CockpitAgent[], showAgen
         </Text>
         <Text> </Text>
         <Text bold={ev.status === 'running'}>{fit(ev.title, titleWidth)}</Text>
-        {tag !== '' ? <Text color={agentHue(ev.agentId ?? '')}> ⟡{tag}</Text> : ''}
+        {tag !== undefined ? <Text color={agentHue(ev.agentId ?? '')}> ⟡{tag}</Text> : ''}
         <Text dimColor={ev.status !== 'running'} color={ev.status === 'running' ? STATUS_COLOR.running : undefined}>
           {' '}
           {dur}
@@ -181,15 +201,18 @@ const detail = (k: Kit, ev: CockpitEvent, change: CockpitChange | undefined): Re
   )
 }
 
-/** The refs the feed shows for the current filter and limit, newest first. */
+/** The page of refs the feed shows for the current filter, newest first. */
 export const visibleRefs = (
-  ui: { filter: string; limit: number },
+  ui: { filter: string; limit: number; offset?: number },
   refs: readonly CockpitFeedRef[],
-): { shown: CockpitFeedRef[]; total: number } => {
+): { shown: CockpitFeedRef[]; total: number; offset: number } => {
   const filtered = refs.filter(r =>
     ui.filter === 'all' ? true : ui.filter === 'main' ? r.agent === undefined : r.agent === ui.filter,
   )
-  return { shown: filtered.slice(-ui.limit).reverse(), total: filtered.length }
+  const size = Math.max(1, Math.min(ui.limit, FEED_PAGE))
+  const offset = Math.max(0, Math.min(ui.offset ?? 0, filtered.length - 1))
+  const end = filtered.length - offset
+  return { shown: filtered.slice(Math.max(0, end - size), end).reverse(), total: filtered.length, offset }
 }
 
 export const feedView = (
@@ -198,18 +221,27 @@ export const feedView = (
   agents: readonly CockpitAgent[],
   events: readonly CockpitEvent[],
   total: number,
+  offset: number,
   expandedChange: CockpitChange | undefined,
 ): RenderElement => {
   const { Box, Button, Text } = k
   const showAgent = k.ui.filter === 'all' || k.ui.filter === 'main'
+  // Output tails cost two lines a row: errors and the newest command only.
+  const newestShell = events.find(ev => ev.cat === 'shell' && ev.status !== 'running')?.id
+  const older = total - offset - events.length
   const out: RenderElement[] = []
   for (const ev of events) {
-    out.push(row(k, ev, agents, showAgent))
+    out.push(row(k, ev, agents, showAgent, ev.status !== 'ok' || ev.id === newestShell))
     if (k.ui.expanded === ev.id) out.push(detail(k, ev, expandedChange))
   }
   return (
     <Box key="feed" flexDirection="column">
       {refs.some(r => r.agent !== undefined) ? filterRow(k, refs, agents) : null}
+      {offset > 0 ? (
+        <Button key="newer" plain onPress={() => setUi(k, u => ({ ...u, offset: Math.max(0, (u.offset ?? 0) - FEED_PAGE), expanded: null }))}>
+          <Text dimColor>↑ {offset} newer — back toward now</Text>
+        </Button>
+      ) : null}
       {events.length === 0
         ? empty(k, 'empty', [
             refs.length === 0 ? 'Nothing yet — waiting for Claude ✨' : 'Nothing for this filter.',
@@ -220,9 +252,9 @@ export const feedView = (
               {out}
             </Box>
           )}
-      {total > events.length ? (
-        <Button key="more" plain onPress={() => setUi(k, u => ({ ...u, limit: u.limit + 40 }))}>
-          <Text dimColor>↓ {total - events.length} older — show 40 more</Text>
+      {older > 0 ? (
+        <Button key="more" plain onPress={() => setUi(k, u => ({ ...u, offset: (u.offset ?? 0) + FEED_PAGE, expanded: null }))}>
+          <Text dimColor>↓ {older} older — next {Math.min(FEED_PAGE, older)}</Text>
         </Button>
       ) : null}
     </Box>

@@ -11,7 +11,7 @@ Cockpit only watches. It never blocks or changes a tool call. If something break
 - **Desktop app (Code tab)**: the pane opens by itself as a sidebar, once per session, as soon as the app connects. To turn that off, disable the plugin's `autoOpen` option.
 - **Anywhere**: the `/cockpit [tab]` command opens the pane, or focuses it if it is already open.
   - `/cockpit feed`, `files`, `agents` or `screen` opens the pane on that tab.
-  - `/cockpit live` turns live screen capture on or off.
+  - `/cockpit live` turns live screen capture on or off; `/cockpit live on` or `live off` sets it. It stops by itself after 3 failed captures in a row.
   - `/cockpit close` closes the pane.
 
 ## Header

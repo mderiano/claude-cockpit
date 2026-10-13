@@ -73,6 +73,8 @@ export type CockpitChange = {
   added: number
   removed: number
   isTruncated?: boolean
+  /** No diff: the old content was too large for the tool to include one. */
+  isTooLarge?: boolean
 }
 
 export type CockpitAgentStatus = 'running' | 'idle' | 'done' | 'failed' | 'killed'
@@ -137,7 +139,10 @@ export type CockpitUi = {
   expanded: string | null
   file: string | null
   agent: string | null
+  /** Rows per page of the feed (FEED_PAGE at most). */
   limit: number
+  /** Rows of the feed skipped from the newest: the page in view. */
+  offset?: number
   /** Finished workflow runs the person unfolded on the Agents tab. */
   openRuns?: string[]
   /** Show every finished loose agent, not only the latest few. */

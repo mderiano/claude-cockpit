@@ -5,7 +5,20 @@
 export const firstErrorLine = (text: string): string =>
   (text.split('\n').find(line => line.trim() !== '' && !/^Note:/.test(line)) ?? '').trim().slice(0, 160)
 
+/**
+ * Why a `sips` run made no picture, or undefined when it did: it exits 0 on
+ * an input it cannot read, saying so on stderr, and leaves the output as it was.
+ */
+export const sipsError = (r: { exitCode: number; stdout: string; stderr: string }): string | undefined => {
+  const said = /^(Warning|Error)\b/m.test(r.stderr)
+  if (r.exitCode === 0 && !said) return undefined
+  return firstErrorLine(r.stderr || r.stdout) || `sips failed (${r.exitCode})`
+}
+
 export type Device = { kind: 'ios'; udid: string; name: string } | { kind: 'android'; serial: string; adb: string }
+
+/** Simulators whose screen `simctl io screenshot` reads (a tvOS one may hang on it). */
+const SCREEN_RUNTIME_RE = /iOS|watchOS|xrOS|visionOS/
 
 /** The first booted simulator of `simctl list devices booted -j`, iOS first. */
 export const parseSimctl = (stdout: string): Device | undefined => {
@@ -15,7 +28,7 @@ export const parseSimctl = (stdout: string): Device | undefined => {
   } catch {
     return undefined
   }
-  const runtimes = Object.entries(parsed.devices ?? {})
+  const runtimes = Object.entries(parsed.devices ?? {}).filter(([runtime]) => SCREEN_RUNTIME_RE.test(runtime))
   runtimes.sort(([x], [y]) => Number(/iOS/.test(y)) - Number(/iOS/.test(x)))
   for (const [, list] of runtimes) {
     for (const d of list) {

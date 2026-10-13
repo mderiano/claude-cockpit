@@ -9,7 +9,7 @@
 // the very result `next` gave) and swallows its own failures, with a
 // `.catch` that replays `next`: watching can never block or change a call.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, RenderElement, Register, ToolCallInput, ToolCallResult } from 'claude-code'
+import type { EngineInterface, RenderElement, Register, Timer, ToolCallInput, ToolCallResult } from 'claude-code'
 
 import type {
   CockpitAgent,
@@ -58,8 +58,9 @@ import {
   MAX_WORKFLOWS,
   PANE,
   prettyInput,
+  sparkSeries,
 } from './model'
-import { findImages, firstErrorLine, imageSize, parseAdb, parseSimctl, sipsError } from './screen'
+import { deepImages, findImages, firstErrorLine, imageSize, parseAdb, parseSimctl, sipsError } from './screen'
 import type { Device } from './screen'
 import { agentRefs, agentsView } from './ui/agents'
 import { feedView, visibleRefs } from './ui/feed'
@@ -67,6 +68,9 @@ import { filesView, selectedFile } from './ui/files'
 import { footer, header, tabs } from './ui/header'
 import type { CockpitActions, Kit } from './ui/kit'
 import { screenView } from './ui/screen'
+import { planLive } from './live'
+import { liveView } from './ui/live'
+import { PX_PER_CELL } from './svg/base'
 
 type $T = EngineInterface
 
@@ -217,6 +221,13 @@ const missingTools = new Set<string>()
 type ToolImage = { image: { data: string; mime: string }; label: string }
 let pendingImage: ToolImage | undefined
 let isTakingImage = false
+/** Newest calls the desktop's live view reads. */
+const LIVE_EVENTS = 60
+/** After a browser action, a screenshot follows once the actions pause. */
+const SHOT_DELAY_MS = 700
+let shotTimer: Timer | undefined
+/** This plugin's name: a `tool.call` it raised itself (its screenshot) is no call of Claude's. */
+const SELF = 'cockpit'
 
 const LIVE_MAX_FAILURES = 3
 const NO_DEVICE = 'No iOS simulator or Android emulator running.'
@@ -461,6 +472,48 @@ const setLive = async ($: $T, isLive: (was: boolean) => boolean): Promise<boolea
   return next.isLive
 }
 
+/** The screenshot call that shows what a screen tool just did, if any. */
+const screenshotCallFor = (e: ToolCallInput): { tool: string; args: Record<string, unknown> } | undefined => {
+  const input = e as unknown as { action?: unknown; tabId?: unknown }
+  if (input.action === 'screenshot' || input.action === 'zoom') return undefined
+  const tab = typeof input.tabId === 'string' || typeof input.tabId === 'number' ? { tabId: input.tabId } : {}
+  if (e.tool.startsWith('mcp__Claude_Browser__')) return { tool: 'mcp__Claude_Browser__computer', args: { action: 'screenshot', scale: 0.6, ...tab } }
+  if (e.tool.startsWith('mcp__claude-in-chrome__') && 'tabId' in tab) return { tool: 'mcp__claude-in-chrome__computer', args: { action: 'screenshot', ...tab } }
+  return undefined
+}
+
+/**
+ * After a screen action whose result held no picture, look at the screen:
+ * the simulator through simctl, a browser through its own screenshot tool
+ * (only where that call is allowed without asking the person).
+ */
+const scheduleShot = ($: $T, e: ToolCallInput, r: ToolCallResult): void => {
+  if (r.deny !== undefined) return
+  const images = deepImages(r.result)
+  if (images.length > 0) {
+    const last = images[images.length - 1]
+    if (last !== undefined) $.clock.after(0, () => void queueToolImage($, last, e.tool.split('__').slice(1).join(' · ').replace(/_/g, ' ')))
+    return
+  }
+  const isSim = e.tool.startsWith('mcp__Claude_Code_iOS_Simulator__')
+  const call = isSim ? undefined : screenshotCallFor(e)
+  if (!isSim && call === undefined) return
+  shotTimer?.cancel()
+  shotTimer = $.clock.after(SHOT_DELAY_MS, () => {
+    shotTimer = undefined
+    void quiet(async () => {
+      if (isSim) return void (await captureDevice($))
+      if (call === undefined) return
+      const verdict = await $.tool.check({ tool: call.tool, input: call.args })
+      if (verdict.decision !== 'allow') return
+      const shot: ToolCallResult = await $.tool.call({ tool: call.tool, ...call.args } as never)
+      const found = deepImages(shot.result)
+      const last = found[found.length - 1]
+      if (last !== undefined) await queueToolImage($, last, call.tool.split('__').slice(1).join(' · ').replace(/_/g, ' '))
+    })
+  })
+}
+
 // ================================================================ status, milestones, ticker
 const refreshStatus = async ($: $T): Promise<void> => {
   const stats = await read($, statsAtom)
@@ -517,9 +570,10 @@ const tick = async ($: $T): Promise<void> => {
     // Each write of `now` redraws the pane; on the Screen tab that resends
     // the frame, and nothing there needs the second: every 10 s will do.
     if ((isBusy && ui.tab !== 'screen') || tickCount % 10 === 0) await markNow($, await $.clock.now())
-    if (ui.tab === 'screen' && tickCount % 2 === 0) {
+    if (tickCount % 2 === 0) {
       const screen = await read($, screenAtom)
-      if (screen.isLive) void captureDevice($)
+      // The desktop's live view has no Screen tab: Live refreshes it there.
+      if (screen.isLive && (ui.tab === 'screen' || !(await drawsOnTerminal($)))) void captureDevice($)
     }
     if (tickCount % 5 === 0 && agents.some(a => a.status === 'running' || a.status === 'idle')) {
       const listed = await $.agent.list()
@@ -902,6 +956,9 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', async ($, e, next) => {
+    // The plugin's own look at the screen is no call of Claude's. Told by who
+    // raised it, not by a flag: Claude's calls meanwhile are still recorded.
+    if (next.origin.plugin === SELF) return next(e)
     // The row is written beside the call, never ahead of it: the tool starts
     // at once, whatever the state writes cost.
     let started: Promise<CockpitEvent | undefined>
@@ -922,6 +979,11 @@ export const register: Register = (on, options) => {
     // The result goes to the model now; the bookkeeping (a score of state
     // round-trips) follows once this dispatch resolved.
     const ev = await started
+    try {
+      if (isScreenTool(e.tool)) scheduleShot($, e, r)
+    } catch {
+      // the screen stays as it was
+    }
     try {
       if (ev !== undefined) $.clock.after(0, () => void quiet(() => onToolEnd($, e, ev, r)))
     } catch {
@@ -1097,6 +1159,46 @@ export const register: Register = (on, options) => {
       ui,
       act,
     }
+    // The desktop draws one live view: what Claude does now, then history.
+    if (e.surface !== 'terminal' && tables.Svg !== undefined) {
+      const recent = refs.slice(-LIVE_EVENTS).reverse()
+      const events: CockpitEvent[] = []
+      for (const ref of recent) {
+        const ev = await read($, { plugin: 'cockpit', key: 'event', id: ref.id })
+        if (ev !== null && ev !== undefined) events.push(ev)
+      }
+      // The change each recent edit made, read once per file.
+      const changes = new Map<string, CockpitChange>()
+      const byPath = new Map<string, readonly CockpitChange[]>()
+      for (const ev of events) {
+        if (ev.cat !== 'edit' || ev.filePath === undefined) continue
+        let list = byPath.get(ev.filePath)
+        if (list === undefined) {
+          list = (await read($, { plugin: 'cockpit', key: 'changes', id: ev.filePath })) ?? []
+          byPath.set(ev.filePath, list)
+        }
+        const change = list.find(c => c.id === ev.id)
+        if (change !== undefined) changes.set(ev.id, change)
+      }
+      const plan = planLive({ events, agents, workflows, screen, changes, now })
+      const px = Math.max(240, Math.floor((e.props.bodyColumns - 2) * PX_PER_CELL))
+      const { Box } = els
+      return (
+        <Box key="cockpit" flexDirection="column" paddingX={1}>
+          {liveView(k, {
+            plan,
+            stats,
+            agents,
+            files: files.length,
+            series: sparkSeries(stats, now),
+            screen,
+            px,
+            roomPx: Math.max(10, e.props.scroll.bodyRows) * 19,
+          })}
+        </Box>
+      )
+    }
+
     const running = agents.filter(a => a.status === 'running').length
     const counts: Record<CockpitTab, string> = {
       feed: refs.length > 0 ? String(refs.length) : '',

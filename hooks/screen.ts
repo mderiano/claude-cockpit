@@ -114,3 +114,23 @@ export const findImages = (content: readonly unknown[]): { data: string; mime: s
   for (const block of content) visit(block)
   return out
 }
+
+/**
+ * Images anywhere in a tool's result record, in either spelling: the
+ * Messages API's (`source.data`) or MCP's (`data` + `mimeType`).
+ */
+export const deepImages = (value: unknown, depth = 0): { data: string; mime: string }[] => {
+  if (depth > 6 || typeof value !== 'object' || value === null) return []
+  if (Array.isArray(value)) return value.flatMap(v => deepImages(v, depth + 1))
+  const b = value as { type?: unknown; data?: unknown; mimeType?: unknown; source?: unknown }
+  if (b.type === 'image') {
+    if (typeof b.data === 'string' && b.data.length > 0)
+      return [{ data: b.data, mime: typeof b.mimeType === 'string' ? b.mimeType : 'image/png' }]
+    if (typeof b.source === 'object' && b.source !== null) {
+      const s = b.source as { data?: unknown; media_type?: unknown }
+      if (typeof s.data === 'string' && s.data.length > 0)
+        return [{ data: s.data, mime: typeof s.media_type === 'string' ? s.media_type : 'image/png' }]
+    }
+  }
+  return Object.values(value as Record<string, unknown>).flatMap(v => deepImages(v, depth + 1))
+}

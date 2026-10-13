@@ -1,6 +1,9 @@
 {
   "name": "claude-cockpit",
-  "owner": { "name": "Mathieu Deriano" },
+  "description": "Cockpit: a live view of what Claude Code is doing.",
+  "owner": {
+    "name": "Mathieu Deriano"
+  },
   "plugins": [
     {
       "name": "cockpit",

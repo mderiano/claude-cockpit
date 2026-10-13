@@ -1,0 +1,11 @@
+{
+  "name": "claude-cockpit",
+  "owner": { "name": "Mathieu Deriano" },
+  "plugins": [
+    {
+      "name": "cockpit",
+      "source": "./",
+      "description": "Live cockpit of what Claude is doing: commands and output, file diffs, subagents and workflow agents, and a live emulator/browser screen."
+    }
+  ]
+}

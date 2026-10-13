@@ -1,0 +1,27 @@
+{
+  "name": "cockpit",
+  "version": "0.1.0",
+  "description": "Live cockpit of what Claude is doing: commands and output, file diffs, subagents and workflow agents, and a live emulator/browser screen.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Mathieu Deriano"
+  },
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Ouvrir le cockpit automatiquement",
+      "description": "Ouvre le panneau Cockpit tout seul quand l'app de bureau se connecte (là où il se place en barre latérale). Sinon, utilise /cockpit.",
+      "default": true
+    }
+  },
+  "homepage": "https://github.com/mderiano/claude-cockpit",
+  "repository": "https://github.com/mderiano/claude-cockpit",
+  "license": "MIT",
+  "keywords": [
+    "observability",
+    "dashboard",
+    "subagents",
+    "diff",
+    "simulator"
+  ]
+}

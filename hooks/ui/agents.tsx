@@ -85,7 +85,7 @@ export const agentRefs = (id: string, refs: readonly CockpitFeedRef[]): CockpitF
 
 const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): RenderElement => {
   const { Box, Button, Text } = k
-  const facts = [a.type, a.model, a.tokens !== undefined ? `${fmtCount(a.tokens)} tokens` : undefined, a.isBackground === true ? 'arrière-plan' : undefined]
+  const facts = [a.type, a.model, a.tokens !== undefined ? `${fmtCount(a.tokens)} tokens` : undefined, a.isBackground === true ? 'background' : undefined]
     .filter((x): x is string => x !== undefined && x !== '')
     .join(' · ')
   return (
@@ -101,7 +101,7 @@ const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): 
       </Text>
       {events.length === 0 ? (
         <Text key="none" dimColor italic>
-          Pas encore d’appel d’outil.
+          No tool calls yet.
         </Text>
       ) : (
         <Box key="mini" flexDirection="column" marginTop={1}>
@@ -119,7 +119,7 @@ const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): 
       {a.answer !== undefined ? (
         <Box key="ans" flexDirection="column" marginTop={1}>
           <Text key="t" bold color={ACCENT}>
-            Réponse
+            Answer
           </Text>
           <Text key="a" dimColor wrap="wrap">
             {a.answer}
@@ -127,7 +127,7 @@ const agentDetail = (k: Kit, a: CockpitAgent, events: readonly CockpitEvent[]): 
         </Box>
       ) : null}
       <Box key="act" flexDirection="row" marginTop={1}>
-        <Button key={`ag-filter-${a.id}`} label="Voir son feed" onPress={() => setUi(k, u => ({ ...u, tab: 'feed', filter: a.id, expanded: null }))} />
+        <Button key={`ag-filter-${a.id}`} label="Show its feed" onPress={() => setUi(k, u => ({ ...u, tab: 'feed', filter: a.id, expanded: null }))} />
       </Box>
     </Box>
   )
@@ -216,7 +216,7 @@ export const agentsView = (
   if (hidden > 0 || (showAll && doneRoots.length > FINISHED_SHOWN)) {
     looseRows.push(
       <Button key="ag-more" plain onPress={() => setUi(k, u => ({ ...u, showAllAgents: u.showAllAgents !== true }))}>
-        <Text dimColor>{hidden > 0 ? `  ▸ ${hidden} terminés de plus` : '  ▾ masquer les plus anciens'}</Text>
+        <Text dimColor>{hidden > 0 ? `  ▸ ${hidden} more finished` : '  ▾ hide older ones'}</Text>
       </Button>,
     )
   }
@@ -292,7 +292,7 @@ export const agentsView = (
               {live === 0 ? <Text dimColor> ▾</Text> : ''}
             </Text>
           </Button>
-          <Text color={live > 0 ? AGENT_COLOR.running : AGENT_COLOR.done}>{live > 0 ? `${live} en cours` : 'terminé'}</Text>
+          <Text color={live > 0 ? AGENT_COLOR.running : AGENT_COLOR.done}>{live > 0 ? `${live} running` : 'done'}</Text>
         </Box>
         {progress(k, finished, members.length, Math.min(24, Math.max(6, k.W - 16)))}
         {rows}
@@ -307,8 +307,8 @@ export const agentsView = (
       <Box key="agents" flexDirection="column">
         {mainRow(k, stats, mainCalls)}
         {empty(k, 'agents-empty', [
-          'Pas encore de sous-agent 🤖',
-          'Les agents (Agent), coéquipiers et agents de workflow ultracode apparaîtront ici avec leur activité.',
+          'No subagents yet 🤖',
+          'Subagents, teammates and ultracode workflow agents will show up here with their activity.',
         ])}
       </Box>
     )
@@ -316,9 +316,9 @@ export const agentsView = (
   return (
     <Box key="agents" flexDirection="column">
       <Box key="sum" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
-        {chip(k, 'a-run', `${running} en cours`, AGENT_COLOR.running)}
-        {chip(k, 'a-done', `${done} finis`, AGENT_COLOR.done)}
-        {failed > 0 ? chip(k, 'a-fail', `${failed} échoués`, AGENT_COLOR.failed) : null}
+        {chip(k, 'a-run', `${running} running`, AGENT_COLOR.running)}
+        {chip(k, 'a-done', `${done} done`, AGENT_COLOR.done)}
+        {failed > 0 ? chip(k, 'a-fail', `${failed} failed`, AGENT_COLOR.failed) : null}
       </Box>
       {mainRow(k, stats, mainCalls)}
       {liveRuns}
@@ -339,10 +339,10 @@ const mainRow = (k: Kit, stats: CockpitStats, calls: number): RenderElement => {
       <Text color={stats.isWorking ? AGENT_COLOR.running : AGENT_COLOR.done} bold>
         {stats.isWorking ? agentGlyph('running', k.now) : '◆'}{' '}
       </Text>
-      <Text bold>Session principale</Text>
+      <Text bold>Main session</Text>
       <Text dimColor>
         {' '}
-        · {calls} appels · {stats.turns} tours
+        · {calls} calls · {stats.turns} turns
       </Text>
     </Text>
   )

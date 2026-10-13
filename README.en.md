@@ -6,8 +6,6 @@ A live pane that shows what Claude is doing: the commands it runs and their outp
 
 Cockpit only watches. It never blocks or changes a tool call. If something breaks on its side, the error is swallowed and the session carries on.
 
-The pane's labels are in French.
-
 ## Opening it
 
 - **Desktop app (Code tab)**: the pane opens by itself as a sidebar, once per session, as soon as the app connects. To turn that off, disable the plugin's `autoOpen` option.
@@ -37,7 +35,7 @@ A row of chips sums up the session: tool calls, commands, files touched, `+`/`�
 | Android emulator | `adb` on the `PATH`, in `~/Library/Android/sdk/platform-tools` or in `$ANDROID_HOME/platform-tools`, and a connected device (`adb devices`). |
 | Tool screenshots | Nothing to install. Screenshots Claude takes with the browser tools (Claude Browser, Claude in Chrome), the iOS Simulator tool or computer use show up by themselves. |
 
-Capture only runs while the Screen tab is visible and Live mode is on, or when you press the capture button (« Capturer »). In the desktop app the frame is drawn as an SVG holding a compressed JPEG. In the terminal it uses the kitty graphics protocol (kitty, Ghostty); elsewhere a text stands in for it.
+Capture only runs while the Screen tab is visible and Live mode is on, or when you press Capture. In the desktop app the frame is drawn as an SVG holding a compressed JPEG. In the terminal it uses the kitty graphics protocol (kitty, Ghostty); elsewhere a text stands in for it.
 
 ## Installation
 

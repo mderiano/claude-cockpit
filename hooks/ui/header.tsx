@@ -73,14 +73,14 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
           </Text>
           <Text> </Text>
           {isBusy ? (
-            <Text color={pulse ? '#38bdf8' : '#0ea5e9'}>{pulse ? '●' : '◉'} au travail</Text>
+            <Text color={pulse ? '#38bdf8' : '#0ea5e9'}>{pulse ? '●' : '◉'} working</Text>
           ) : (
-            <Text dimColor>○ au repos</Text>
+            <Text dimColor>○ idle</Text>
           )}
         </Text>
         <Text dimColor>
           ⏱ {elapsed}
-          {stats.turns > 0 ? ` · ${stats.turns} tours` : ''}
+          {stats.turns > 0 ? ` · ${stats.turns} turns` : ''}
         </Text>
       </Box>
       <Box key="h-chips" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
@@ -98,7 +98,7 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
         {Svg !== undefined ? (
           <Svg
             key="spark"
-            alt={`Activité: ${series.join(' ')}`}
+            alt={`Activity: ${series.join(' ')}`}
             source={sparkSvg(series, Math.min(280, Math.max(120, k.W * 5)), 22)}
           />
         ) : (
@@ -117,9 +117,9 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
 
 const TABS: { tab: CockpitTab; label: string; hotkey: string; color: string }[] = [
   { tab: 'feed', label: 'Feed', hotkey: '1', color: CAT_COLOR.shell },
-  { tab: 'files', label: 'Fichiers', hotkey: '2', color: CAT_COLOR.edit },
+  { tab: 'files', label: 'Files', hotkey: '2', color: CAT_COLOR.edit },
   { tab: 'agents', label: 'Agents', hotkey: '3', color: CAT_COLOR.agent },
-  { tab: 'screen', label: 'Écran', hotkey: '4', color: CAT_COLOR.browser },
+  { tab: 'screen', label: 'Screen', hotkey: '4', color: CAT_COLOR.browser },
 ]
 
 export const tabs = (
@@ -157,7 +157,7 @@ export const footer = (k: Kit): RenderElement => {
   const { Text } = k
   return (
     <Text key="footer" dimColor color={MUTED}>
-      1-4 onglets · clic = détails · /cockpit screen
+      1-4 tabs · click = details · /cockpit screen
     </Text>
   )
 }

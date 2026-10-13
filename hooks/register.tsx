@@ -272,7 +272,7 @@ const toSvgFrame = async ($: $T, png: string, jpg: string): Promise<{ b64: strin
       return { b64: base64, width: dims?.width, height: dims?.height }
     }
   }
-  throw new Error('image trop grande même compressée')
+  throw new Error('image too large even compressed')
 }
 
 /** One frame of the booted simulator / emulator into the screen state. */
@@ -289,7 +289,7 @@ const captureDevice = async ($: $T): Promise<void> => {
       await setScreen($, s => ({
         ...s,
         isBusy: false,
-        error: s.source === 'tool' ? undefined : 'Aucun simulateur iOS ni émulateur Android démarré.',
+        error: s.source === 'tool' ? undefined : 'No iOS simulator or Android emulator running.',
       }))
       return
     }
@@ -298,16 +298,16 @@ const captureDevice = async ($: $T): Promise<void> => {
       const r = await $.process.run(['xcrun', 'simctl', 'io', device.udid, 'screenshot', '--type=png', png], {
         timeoutMs: 15_000,
       })
-      if (r.exitCode !== 0) throw new Error(firstErrorLine(r.stderr || r.stdout) || `simctl a échoué (${r.exitCode})`)
+      if (r.exitCode !== 0) throw new Error(firstErrorLine(r.stderr || r.stdout) || `simctl failed (${r.exitCode})`)
       label = clean(device.name)
     } else {
       const remote = '/sdcard/cockpit-frame.png'
       const shot = await $.process.run([device.adb, '-s', device.serial, 'shell', 'screencap', '-p', remote], {
         timeoutMs: 15_000,
       })
-      if (shot.exitCode !== 0) throw new Error(firstErrorLine(shot.stderr || shot.stdout) || 'screencap a échoué')
+      if (shot.exitCode !== 0) throw new Error(firstErrorLine(shot.stderr || shot.stdout) || 'screencap failed')
       const pull = await $.process.run([device.adb, '-s', device.serial, 'pull', remote, png], { timeoutMs: 15_000 })
-      if (pull.exitCode !== 0) throw new Error(firstErrorLine(pull.stderr || pull.stdout) || 'adb pull a échoué')
+      if (pull.exitCode !== 0) throw new Error(firstErrorLine(pull.stderr || pull.stdout) || 'adb pull failed')
       label = `Android ${device.serial}`
     }
     const frame = await toSvgFrame($, png, jpg)
@@ -366,7 +366,7 @@ const takeToolImage = async ($: $T, image: { data: string; mime: string }, label
       const ext = isPng ? 'png' : image.mime === 'image/webp' ? 'webp' : image.mime === 'image/gif' ? 'gif' : 'jpg'
       const raw = `${base}tool-raw.${ext}`
       const decode = await $.process.run(['base64', '-D', '-o', raw], { stdin: image.data, timeoutMs: 15_000 })
-      if (decode.exitCode !== 0) throw new Error(firstErrorLine(decode.stderr) || 'décodage base64 impossible')
+      if (decode.exitCode !== 0) throw new Error(firstErrorLine(decode.stderr) || 'base64 decode failed')
       if (needsFile && isPng) pngPath = raw
       else if (needsFile) {
         const png = `${base}tool.png`
@@ -395,7 +395,7 @@ const takeToolImage = async ($: $T, image: { data: string; mime: string }, label
     }))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    await quiet(() => setScreen($, s => ({ ...s, error: `Capture d’outil: ${clean(message).slice(0, 160)}` })))
+    await quiet(() => setScreen($, s => ({ ...s, error: `Tool screenshot: ${clean(message).slice(0, 160)}` })))
   }
 }
 
@@ -665,8 +665,8 @@ const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallR
     }
   })
 
-  if (changes.length > 0) await celebrate($, 'first-edit', `✎ Premier fichier modifié : ${basename(changes[0]?.path ?? '')}`)
-  if (ev.isTest === true && status === 'ok') await celebrate($, 'tests-green', '✅ Tests au vert — bien joué !')
+  if (changes.length > 0) await celebrate($, 'first-edit', `✎ First file changed: ${basename(changes[0]?.path ?? '')}`)
+  if (ev.isTest === true && status === 'ok') await celebrate($, 'tests-green', '✅ Tests passing — nice one!')
   await checkMilestones($)
   await refreshStatus($)
 
@@ -685,7 +685,7 @@ const onToolAbort = async ($: $T, ev: CockpitEvent, err: unknown): Promise<void>
     ...ev,
     status: 'error',
     endedAt: now,
-    output: `⏹ interrompu${message !== '' ? ` — ${clip(clean(message), 400)}` : ''}`,
+    output: `⏹ interrupted${message !== '' ? ` — ${clip(clean(message), 400)}` : ''}`,
   }
   await $.state.set({ plugin: 'cockpit', key: 'event', id: ev.id }, done)
   await statsQ($, s => ({ ...s, running: Math.max(0, s.running - 1), streak: 0 }))
@@ -712,7 +712,7 @@ const reconcile = async ($: $T, agentId: string | undefined): Promise<void> => {
       ...ev,
       status: 'error',
       endedAt: now,
-      output: ev.output ?? '⏹ interrompu (fin non observée)',
+      output: ev.output ?? '⏹ interrupted (end not observed)',
     })
     fixed += 1
   }
@@ -945,7 +945,7 @@ export const register: Register = (on, options) => {
     const word = e.args.trim().toLowerCase().split(/\s+/)[0] ?? ''
     if (word === 'close' || word === 'off') {
       await $.ui.close({ id: PANE })
-      return { text: 'Cockpit fermé.' }
+      return { text: 'Cockpit closed.' }
     }
     const tab = TAB_WORDS[word]
     if (tab !== undefined) await update($, uiAtom, u => ({ ...u, tab }))
@@ -953,8 +953,8 @@ export const register: Register = (on, options) => {
     const opened = await $.ui.open({ id: PANE, title: 'Cockpit', focus: true })
     if (tab === 'screen') $.clock.after(0, () => void captureDevice($))
     const ui = await read($, uiAtom)
-    if (opened.isPlaced) return { text: `Cockpit ouvert (${ui.tab}).` }
-    return { text: `Cockpit n’a pas pu s’ouvrir ici : ${opened.reason}` }
+    if (opened.isPlaced) return { text: `Cockpit opened (${ui.tab}).` }
+    return { text: `Cockpit could not open here: ${opened.reason}` }
   })
 
   on('ui.render', { component: 'Pane', requestId: 'cockpit' }, async ($, e) => {

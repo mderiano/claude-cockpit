@@ -122,7 +122,7 @@ export const outputOf = (tool: string, r: ToolCallResult): { output?: string; ex
       .filter(Boolean)
       .join('\n')
     const bg = str(res.backgroundTaskId)
-    const text = clean(joined !== '' ? joined : bg !== undefined ? `(en arrière-plan · ${bg})` : r.text ?? '')
+    const text = clean(joined !== '' ? joined : bg !== undefined ? `(in background · ${bg})` : r.text ?? '')
     return { output: excerpt(text, MAX_OUTPUT), exitCode: res.interrupted === true ? 130 : 0 }
   }
   if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit') {
@@ -254,9 +254,9 @@ export const agentAnswer = (result: Record<string, unknown>): string => {
 /** The one line under the prompt. */
 export const statusLine = (stats: CockpitStats, files: number, agents: readonly CockpitAgent[]): string => {
   const running = agents.filter(a => a.status === 'running').length
-  const parts = [`◆ ${fmtCount(stats.calls)} appels`]
-  if (files > 0) parts.push(`✎ ${files} fichiers +${fmtCount(stats.added)} −${fmtCount(stats.removed)}`)
-  if (agents.length > 0) parts.push(`🤖 ${running} actifs / ${agents.length}`)
+  const parts = [`◆ ${fmtCount(stats.calls)} call${stats.calls === 1 ? "" : "s"}`]
+  if (files > 0) parts.push(`✎ ${files} files +${fmtCount(stats.added)} −${fmtCount(stats.removed)}`)
+  if (agents.length > 0) parts.push(`🤖 ${running} running / ${agents.length}`)
   if (stats.errors > 0) parts.push(`✗ ${stats.errors}`)
   if (stats.streak >= 5) parts.push(`🔥 ×${stats.streak}`)
   return parts.join(' · ')
@@ -267,14 +267,14 @@ export type Milestone = { key: string; text: string }
 /** Milestones reached and not yet celebrated. */
 export const dueMilestones = (stats: CockpitStats, agents: number, files: number): Milestone[] => {
   const all: { key: string; ok: boolean; text: string }[] = [
-    { key: 'calls-100', ok: stats.calls >= 100, text: '⚡ 100 appels d’outils — ça chauffe !' },
-    { key: 'calls-500', ok: stats.calls >= 500, text: '🚀 500 appels d’outils. Mode marathon.' },
-    { key: 'combo-25', ok: stats.streak >= 25, text: '🔥 Combo ×25 sans une erreur' },
-    { key: 'combo-100', ok: stats.streak >= 100, text: '🌟 Combo ×100 — sans faute' },
-    { key: 'agents-10', ok: agents >= 10, text: '🤖 10 agents lancés' },
-    { key: 'agents-25', ok: agents >= 25, text: '🛸 25 agents lancés — une vraie escadrille' },
-    { key: 'agents-50', ok: agents >= 50, text: '🌌 50 agents lancés' },
-    { key: 'files-10', ok: files >= 10, text: '📚 10 fichiers modifiés' },
+    { key: 'calls-100', ok: stats.calls >= 100, text: '⚡ 100 tool calls — heating up!' },
+    { key: 'calls-500', ok: stats.calls >= 500, text: '🚀 500 tool calls. Marathon mode.' },
+    { key: 'combo-25', ok: stats.streak >= 25, text: '🔥 Combo ×25 without a single error' },
+    { key: 'combo-100', ok: stats.streak >= 100, text: '🌟 Combo ×100 — flawless' },
+    { key: 'agents-10', ok: agents >= 10, text: '🤖 10 agents launched' },
+    { key: 'agents-25', ok: agents >= 25, text: '🛸 25 agents launched — a whole squadron' },
+    { key: 'agents-50', ok: agents >= 50, text: '🌌 50 agents launched' },
+    { key: 'files-10', ok: files >= 10, text: '📚 10 files changed' },
   ]
   return all.filter(m => m.ok && !stats.milestones.includes(m.key)).map(({ key, text }) => ({ key, text }))
 }

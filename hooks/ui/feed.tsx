@@ -45,7 +45,7 @@ const filterRow = (k: Kit, refs: readonly CockpitFeedRef[], agents: readonly Coc
   }
   return (
     <Box key="filters" flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
-      {option('f-all', 'all', 'Tout')}
+      {option('f-all', 'all', 'All')}
       {option('f-main', 'main', 'Session')}
       {recent.map(id => option(`f-${id}`, id, clip(agentLabel(agents, id), 18), agentHue(id)))}
     </Box>
@@ -131,13 +131,13 @@ const detail = (k: Kit, ev: CockpitEvent, change: CockpitChange | undefined): Re
   const facts: string[] = [ev.tool]
   if (ev.exitCode !== undefined) facts.push(`exit ${ev.exitCode}`)
   facts.push(duration(k, ev))
-  if (ev.isBackground === true) facts.push('arrière-plan')
+  if (ev.isBackground === true) facts.push('background')
   if (ev.agentId !== undefined) facts.push(`agent ${ev.agentId.slice(0, 10)}`)
   const command = ev.tool === 'Bash' && ev.detail !== undefined ? ev.detail.replace(/^\$ /, '').replace(/ ⏎ /g, '\n') : undefined
   return (
     <Box key={`detail-${ev.id}`} flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} marginBottom={1}>
       <Box key="facts" flexDirection="row" flexWrap="wrap" columnGap={1}>
-        {chip(k, 'st', ev.status === 'running' ? 'EN COURS' : ev.status === 'ok' ? 'OK' : ev.status === 'error' ? 'ERREUR' : 'REFUSÉ', STATUS_COLOR[ev.status])}
+        {chip(k, 'st', ev.status === 'running' ? 'RUNNING' : ev.status === 'ok' ? 'OK' : ev.status === 'error' ? 'ERROR' : 'DENIED', STATUS_COLOR[ev.status])}
         <Text key="f" dimColor>
           {facts.join(' · ')}
         </Text>
@@ -145,14 +145,14 @@ const detail = (k: Kit, ev: CockpitEvent, change: CockpitChange | undefined): Re
       {command !== undefined ? (
         <Box key="cmd" flexDirection="column" marginTop={1}>
           <Text key="t" bold color={color}>
-            Commande
+            Command
           </Text>
           <Code key="c" source={command} language="bash" wrap="wrap" />
         </Box>
       ) : (
         <Box key="in" flexDirection="column" marginTop={1}>
           <Text key="t" bold color={color}>
-            Entrée
+            Input
           </Text>
           <Code key="c" source={ev.input} language="json" wrap="wrap" />
         </Box>
@@ -168,13 +168,13 @@ const detail = (k: Kit, ev: CockpitEvent, change: CockpitChange | undefined): Re
       {ev.output !== undefined ? (
         <Box key="out" flexDirection="column" marginTop={1}>
           <Text key="t" bold color={ev.status === 'ok' ? color : STATUS_COLOR[ev.status]}>
-            Sortie
+            Output
           </Text>
           <Code key="c" source={ev.output} language="text" wrap="wrap" />
         </Box>
       ) : ev.status === 'running' ? (
         <Text key="wait" dimColor italic>
-          … en cours depuis {duration(k, ev)}
+          … running for {duration(k, ev)}
         </Text>
       ) : null}
     </Box>
@@ -212,8 +212,8 @@ export const feedView = (
       {refs.some(r => r.agent !== undefined) ? filterRow(k, refs, agents) : null}
       {events.length === 0
         ? empty(k, 'empty', [
-            refs.length === 0 ? 'Rien encore — je t’attends ✨' : 'Rien pour ce filtre.',
-            'Chaque commande, lecture, édition ou agent apparaîtra ici en direct.',
+            refs.length === 0 ? 'Nothing yet — waiting for Claude ✨' : 'Nothing for this filter.',
+            'Every command, read, edit or agent will show up here live.',
           ])
         : (
             <Box key="list" flexDirection="column" marginTop={1}>
@@ -222,7 +222,7 @@ export const feedView = (
           )}
       {total > events.length ? (
         <Button key="more" plain onPress={() => setUi(k, u => ({ ...u, limit: u.limit + 40 }))}>
-          <Text dimColor>↓ {total - events.length} plus anciens — afficher 40 de plus</Text>
+          <Text dimColor>↓ {total - events.length} older — show 40 more</Text>
         </Button>
       ) : null}
     </Box>

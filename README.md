@@ -4,6 +4,8 @@
 
 Un panneau en direct qui montre ce que fait Claude : les commandes et leur sortie, les fichiers modifiés avec leur diff, les sous-agents (y compris ceux des workflows ultracode) et l’écran d’un simulateur, d’un émulateur ou du navigateur.
 
+L’interface du panneau est en anglais.
+
 Le cockpit se contente d’observer. Il ne bloque jamais un appel d’outil et ne le modifie pas. Si quelque chose casse de son côté, l’erreur est avalée et la session continue.
 
 ## Ouvrir
@@ -23,11 +25,11 @@ Une rangée de pastilles résume la session : appels d’outils, commandes, fich
 | Touche | Onglet | Contenu |
 |---|---|---|
 | `1` | **Feed** | Tous les appels d’outils, du plus récent au plus ancien. Chacun a une pastille de couleur par catégorie (shell, édition, lecture, recherche, web, agent, écran, MCP), un statut (◐ en cours, ✓ ok, ✗ erreur, ⛔ refusé) et sa durée. Clique une ligne pour voir l’entrée complète, la sortie et le diff. Un filtre permet de choisir Tout, la session principale ou un agent précis. |
-| `2` | **Fichiers** | Les fichiers modifiés, avec les compteurs `+`/`−` et l’historique de chaque fichier en diff unifié coloré. |
+| `2` | **Files** | Les fichiers modifiés, avec les compteurs `+`/`−` et l’historique de chaque fichier en diff unifié coloré. |
 | `3` | **Agents** | La session principale, puis l’arbre des sous-agents et des coéquipiers. Les runs de workflow (ultracode) ont une barre de progression. Ce qui tourne est affiché en premier. Un run terminé tient sur une ligne qu’on déplie d’un clic. Clique un agent pour voir son mini-feed et sa réponse. |
-| `4` | **Écran** | La dernière image d’un simulateur, d’un émulateur ou d’un outil. `l` active ou coupe le mode Live (une capture toutes les 2 s), `s` prend une capture. |
+| `4` | **Screen** | La dernière image d’un simulateur, d’un émulateur ou d’un outil. `l` active ou coupe le mode Live (une capture toutes les 2 s), `s` prend une capture. |
 
-## Sources de l’onglet Écran
+## Sources de l’onglet Screen
 
 | Source | Ce qu’il faut |
 |---|---|
@@ -35,7 +37,7 @@ Une rangée de pastilles résume la session : appels d’outils, commandes, fich
 | Émulateur Android | `adb` dans le `PATH`, dans `~/Library/Android/sdk/platform-tools` ou dans `$ANDROID_HOME/platform-tools`, et un appareil connecté (`adb devices`). |
 | Captures d’outils | Rien à installer. Les captures prises par Claude avec les outils navigateur (Claude Browser, Claude in Chrome), simulateur iOS ou computer-use s’affichent automatiquement. |
 
-La capture ne tourne que si l’onglet Écran est visible et que le mode Live est actif, ou quand tu appuies sur « Capturer ». Dans l’app de bureau, l’image passe par un SVG compressé en JPEG. Dans le terminal, elle passe par le protocole d’images kitty (kitty, Ghostty) ; ailleurs, un texte la remplace.
+La capture ne tourne que si l’onglet Screen est visible et que le mode Live est actif, ou quand tu appuies sur « Capture ». Dans l’app de bureau, l’image passe par un SVG compressé en JPEG. Dans le terminal, elle passe par le protocole d’images kitty (kitty, Ghostty) ; ailleurs, un texte la remplace.
 
 ## Installation
 

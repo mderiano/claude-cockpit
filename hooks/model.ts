@@ -233,7 +233,7 @@ export const excerpt = (text: string, max: number): string => {
   const head = Math.floor(max * 0.3)
   const tail = max - head - 40
   const cut = text.length - head - tail
-  return `${text.slice(0, head)}\n… ${cut} caractères omis …\n${text.slice(text.length - tail)}`
+  return `${text.slice(0, head)}\n… ${cut} characters omitted …\n${text.slice(text.length - tail)}`
 }
 
 export const firstLine = (text: string): string => {

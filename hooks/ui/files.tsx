@@ -69,13 +69,13 @@ const changeBlock = (k: Kit, path: string, c: CockpitChange, agents: readonly Co
         )}
         <Text color={ADDED}> +{c.added}</Text>
         <Text color={REMOVED}> −{c.removed}</Text>
-        {c.isTruncated === true ? <Text dimColor> · diff tronqué</Text> : ''}
+        {c.isTruncated === true ? <Text dimColor> · diff truncated</Text> : ''}
       </Text>
       {c.diff !== '' ? (
         <Code key="d" source={c.diff} format="diff" path={path} wrap="truncate-end" />
       ) : (
         <Text key="d" dimColor italic>
-          (aucune ligne changée)
+          (no lines changed)
         </Text>
       )}
     </Box>
@@ -95,8 +95,8 @@ export const filesView = (
   const { Box, Text } = k
   if (files.length === 0) {
     return empty(k, 'files-empty', [
-      'Aucun fichier modifié pour l’instant ✍️',
-      'Les Edit, Write et NotebookEdit — et les fichiers changés par des commandes — s’afficheront ici avec leur diff.',
+      'No files changed yet ✍️',
+      'Edit, Write and NotebookEdit calls — and files changed by commands — will show up here with their diffs.',
     ])
   }
   const selected = selectedFile(k.ui, files)
@@ -107,7 +107,7 @@ export const filesView = (
     <Box key="files" flexDirection="column">
       <Box key="sum" flexDirection="row" columnGap={1} marginTop={1}>
         <Text bold>
-          {files.length} fichier{files.length > 1 ? 's' : ''}
+          {files.length} file{files.length > 1 ? 's' : ''}
         </Text>
         <Text color={ADDED} bold>
           +{totalAdded}
@@ -120,7 +120,7 @@ export const filesView = (
         {files.slice(0, MAX_LISTED).map(f => fileRow(k, f, f.path === selected?.path))}
         {files.length > MAX_LISTED ? (
           <Text key="more" dimColor>
-            … et {files.length - MAX_LISTED} autres
+            … and {files.length - MAX_LISTED} more
           </Text>
         ) : null}
       </Box>
@@ -131,7 +131,7 @@ export const filesView = (
             'sel-t',
             fit(basename(selected.path), Math.max(8, k.W - 18)).trimEnd(),
             CAT_COLOR.edit,
-            `${history.length} changement${history.length > 1 ? 's' : ''}`,
+            `${history.length} change${history.length > 1 ? 's' : ''}`,
           )}
           <Text key="sel-p" dimColor wrap="truncate-start">
             {dirname(selected.path)}
@@ -139,7 +139,7 @@ export const filesView = (
           {recent.map((c, i) => changeBlock(k, selected.path, c, agents, i))}
           {history.length > MAX_DIFFS ? (
             <Text key="older" dimColor>
-              … {history.length - MAX_DIFFS} changements plus anciens
+              … {history.length - MAX_DIFFS} older changes
             </Text>
           ) : null}
         </Box>

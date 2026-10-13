@@ -134,7 +134,7 @@ describe('cockpit', () => {
     const stats = { value: await peek($, 'stats') }
     expect(stats.value).toMatchObject({ calls: 1, commands: 1, running: 0, errors: 0, streak: 1 })
     expect(stats.value?.milestones).toContain('tests-green')
-    expect(statuses.some(s => s?.includes('1 appels') === true)).toBe(true)
+    expect(statuses.some(s => s?.includes('1 call') === true)).toBe(true)
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', viewport: { columns: 100, rows: 40, isFullscreen: true }, props: paneProps() })
       expect(await ui.find({ text: /Run the tests/ })).toBeDefined()
@@ -324,16 +324,16 @@ describe('cockpit', () => {
     for (const surface of ALL_SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps(surface === 'mobile' ? 40 : 80) })
       expect(await ui.find({ text: /COCKPIT/ })).toBeDefined()
-      expect(await ui.find({ text: /je t’attends/ })).toBeDefined()
+      expect(await ui.find({ text: /waiting for Claude/ })).toBeDefined()
       await ui.press({ key: 'tab-files' })
-      expect(await ui.find({ text: /Aucun fichier modifié/ })).toBeDefined()
+      expect(await ui.find({ text: /No files changed/ })).toBeDefined()
       await ui.press({ key: 'tab-agents' })
-      expect(await ui.find({ text: /Pas encore de sous-agent/ })).toBeDefined()
+      expect(await ui.find({ text: /No subagents yet/ })).toBeDefined()
       await ui.press({ key: 'tab-screen' })
       expect(await ui.find({ key: 'live' })).toBeDefined()
-      expect(await ui.find({ text: /Aucun simulateur iOS ni émulateur Android/ })).toBeDefined()
+      expect(await ui.find({ text: /No iOS simulator or Android emulator/ })).toBeDefined()
       await ui.press({ key: 'tab-feed' })
-      expect(await ui.find({ text: /je t’attends/ })).toBeDefined()
+      expect(await ui.find({ text: /waiting for Claude/ })).toBeDefined()
       await ui.unmount()
     }
   })

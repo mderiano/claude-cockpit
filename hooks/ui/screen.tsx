@@ -22,10 +22,10 @@ export const frameSvg = (s: CockpitScreen): { source: string; width: number; hei
 }
 
 const SOURCE_LABEL: Record<CockpitScreen['source'], string> = {
-  none: 'aucune source',
-  ios: 'Simulateur iOS',
-  android: 'Émulateur Android',
-  tool: 'Capture d’outil',
+  none: 'no source',
+  ios: 'iOS Simulator',
+  android: 'Android emulator',
+  tool: 'Tool screenshot',
 }
 
 /** Rows above the frame: header, stats, tabs, toolbar, status, margins. */
@@ -46,7 +46,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
       >
         <Text color={s.isLive ? '#ef4444' : undefined}>{s.isLive ? '●' : '○'}</Text> Live
       </Button>
-      <Button key="snap" hotkey="s" label="📸 Capturer" onPress={() => k.act.capture()} />
+      <Button key="snap" hotkey="s" label="📸 Capture" onPress={() => k.act.capture()} />
     </Box>
   )
   const status = (
@@ -59,17 +59,17 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
       ) : null}
       {s.at !== undefined ? (
         <Text key="age" dimColor>
-          il y a {fmtAgo(s.at, k.now)}
+          {fmtAgo(s.at, k.now) === 'now' ? 'just now' : `${fmtAgo(s.at, k.now)} ago`}
         </Text>
       ) : null}
       {s.isBusy === true ? (
         <Text key="busy" color="#38bdf8">
-          ◐ capture…
+          ◐ capturing…
         </Text>
       ) : null}
       {s.isLive ? (
         <Text key="live" color="#ef4444">
-          ● en direct (2 s)
+          ● live (2 s)
         </Text>
       ) : null}
     </Box>
@@ -123,7 +123,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
     } else if (s.b64 !== undefined) {
       picture = (
         <Text key="frame" dimColor italic>
-          [{alt}] — image non affichable ici
+          [{alt}] — image cannot be shown here
         </Text>
       )
     }
@@ -140,8 +140,8 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
         </Box>
       ) : (
         empty(k, 'screen-empty', [
-          'Pas encore d’image 📱',
-          'Démarre un simulateur iOS ou un émulateur Android puis « Capturer » (ou Live), ou laisse Claude faire une capture navigateur / simulateur : elle s’affichera ici.',
+          'No image yet 📱',
+          'Start an iOS simulator or an Android emulator, then press Capture (or Live), or let Claude take a browser / simulator screenshot: it will show up here.',
         ])
       )}
     </Box>

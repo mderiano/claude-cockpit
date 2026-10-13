@@ -9,8 +9,8 @@
   "userConfig": {
     "autoOpen": {
       "type": "boolean",
-      "title": "Ouvrir le cockpit automatiquement",
-      "description": "Ouvre le panneau Cockpit tout seul quand l'app de bureau se connecte (là où il se place en barre latérale). Sinon, utilise /cockpit.",
+      "title": "Open Cockpit automatically",
+      "description": "Opens the Cockpit pane by itself when the desktop app connects (where it docks as a sidebar). Otherwise, use /cockpit.",
       "default": true
     }
   },

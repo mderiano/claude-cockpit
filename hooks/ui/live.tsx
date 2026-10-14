@@ -44,14 +44,7 @@ const momentView = (k: Kit, d: LiveData, m: Moment, key: string, isNow: boolean,
     case 'screen': {
       const card = screenCardSvg(w, d.screen, k.now, Math.min(560, Math.max(260, d.roomPx * 0.55)))
       if (card === undefined) return null
-      return (
-        <Box key={key} flexDirection="column">
-          {svg(k, 'frame', card, `Screen: ${d.screen.label}`)}
-          <Text key="dims" dimColor>
-            {`${d.screen.width ?? '?'}×${d.screen.height ?? '?'} · ${Math.round(((d.screen.b64?.length ?? 0) * 3) / 4 / 1024)} KB`}
-          </Text>
-        </Box>
-      )
+      return svg(k, key, card, `Screen: ${d.screen.label}`)
     }
     case 'call':
       return svg(k, key, nowCallSvg(w, m.ev, d.agents, k.now), m.ev.title)

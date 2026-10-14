@@ -1146,19 +1146,24 @@ describe('cockpit screen follow-up', () => {
 })
 
 describe('cockpit footer chip', () => {
-  test('the chip beside the modes sums up the session and toggles the pane', WITH_SPY, async ($, on) => {
+  test('the terminal chip toggles the pane; the desktop gets a label and an opener above the prompt', WITH_SPY, async ($, on) => {
     const { opened, clock, closed, pane } = engine(on)
     on('tool.call', () => ({ result: { stdout: 'ok', stderr: '', interrupted: false }, text: 'ok' }))
+    // The engine's own drawing, where the plugin hands a site back.
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      const modes = (e.props as { modes?: readonly string[] }).modes
+      return Text({ children: modes !== undefined ? modes.join(' & ') : '' })
+    })
     await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-    for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'SessionMode', props: { modes: ['focus'] } })
-      expect((await ui.find({ key: 'cockpit-toggle' }))?.text).toContain('Cockpit')
-      expect(await ui.find({ text: /focus/ })).toBeDefined()
-      await ui.unmount()
-    }
+    // Terminal: a button beside the modes.
+    let ui = await $.ui.mount({ plugin: 'cockpit', surface: 'terminal', component: 'SessionMode', props: { modes: ['focus'] } })
+    expect((await ui.find({ key: 'cockpit-toggle' }))?.text).toContain('Cockpit')
+    expect(await ui.find({ text: /focus/ })).toBeDefined()
     await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List', tool_use_id: 'c1' })
     await clock.settle()
-    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    await ui.unmount()
+    ui = await $.ui.mount({ plugin: 'cockpit', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
     const chip = await ui.find({ key: 'cockpit-toggle' })
     expect(chip?.text).toContain('◆ 1')
     expect(chip?.text).not.toContain('Cockpit')
@@ -1169,5 +1174,20 @@ describe('cockpit footer chip', () => {
     await ui.press({ key: 'cockpit-toggle' })
     expect(closed).toContain('cockpit')
     await ui.unmount()
+    pane.isUp = false
+    // Desktop: the chip is a mode label (no button there) ...
+    const label = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    expect(await label.find({ key: 'cockpit-toggle' })).toBeUndefined()
+    expect(await label.find({ text: /◆ 1/ })).toBeDefined()
+    await label.unmount()
+    // ... and above the prompt, while the pane is closed, one opener.
+    const band = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 }, view: {} }
+    const opener = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'AbovePrompt', props: band })
+    expect((await opener.find({ key: 'cockpit-open' }))?.text).toContain('Open Cockpit')
+    const n = opened.length
+    await opener.press({ key: 'cockpit-open' })
+    expect(opened.length).toBe(n + 1)
+    expect(await opener.find({ key: 'cockpit-open' })).toBeUndefined()
+    await opener.unmount()
   })
 })

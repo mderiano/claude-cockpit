@@ -531,10 +531,20 @@ const togglePane = async ($: $T): Promise<void> => {
   const panes = await $.ui.panes()
   if (panes.some(p => p.id === PANE && p.isShown)) {
     await $.ui.close({ id: PANE })
+    await update($, uiAtom, u => ({ ...u, isPaneShown: false }))
     return
   }
   ensureTicker($)
-  await $.ui.open({ id: PANE, title: 'Cockpit' })
+  const opened = await $.ui.open({ id: PANE, title: 'Cockpit' })
+  if (opened.isPlaced) await update($, uiAtom, u => ({ ...u, isPaneShown: true }))
+}
+
+/** Which UI sites a surface really asks this plugin to draw (a dev trace). */
+const traced = new Set<string>()
+const trace = ($: $T, tag: string): void => {
+  if (traced.has(tag)) return
+  traced.add(tag)
+  void $.fs.write('/tmp/cockpit-ui-trace.txt', [...traced].join('\n') + '\n').catch(() => undefined)
 }
 
 const celebrate = async ($: $T, key: string, text: string): Promise<void> => {
@@ -888,7 +898,8 @@ const autoOpen = async ($: $T): Promise<void> => {
   if (ui.autoOpened === true) return
   await update($, uiAtom, u => ({ ...u, autoOpened: true }))
   ensureTicker($)
-  await $.ui.open({ id: PANE, title: 'Cockpit' })
+  const opened = await $.ui.open({ id: PANE, title: 'Cockpit' })
+  if (opened.isPlaced) await update($, uiAtom, u => ({ ...u, isPaneShown: true }))
 }
 
 // ================================================================ the pane
@@ -917,6 +928,12 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await quiet(async () => {
+      // A status line left by an older copy of the module: gone at once.
+      $.ui.status(undefined)
+      lastStatus = 'cleared'
+      // A reload finds the pane as the engine kept it.
+      const isUp = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
+      await update($, uiAtom, u => ({ ...u, isPaneShown: isUp }))
       if (e.surface !== null) await $.state.set({ plugin: 'cockpit', key: 'surface' }, e.surface)
       await $.command.register({
         name: 'cockpit',
@@ -1101,6 +1118,7 @@ export const register: Register = (on, options) => {
     const [word = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
     if (word === 'close' || word === 'off') {
       await $.ui.close({ id: PANE })
+      await update($, uiAtom, u => ({ ...u, isPaneShown: false }))
       return {}
     }
     const tab = TAB_WORDS[word]
@@ -1112,6 +1130,7 @@ export const register: Register = (on, options) => {
     if (tab !== undefined) await update($, uiAtom, u => ({ ...u, tab, offset: 0 }))
     const opened = await $.ui.open({ id: PANE, title: 'Cockpit', focus: true })
     if (!opened.isPlaced) return { text: `Cockpit could not open here: ${opened.reason}` }
+    await update($, uiAtom, u => ({ ...u, isPaneShown: true }))
     if (live !== undefined) {
       const isLive = await setLive($, was => (live === 'toggle' ? !was : live))
       $.ui.toast(isLive ? 'Cockpit · Live ● on' : 'Cockpit · Live ○ off', { timeoutMs: 3000 })
@@ -1120,18 +1139,46 @@ export const register: Register = (on, options) => {
     return {}
   })
 
-  // The footer chip, beside the mode labels under the prompt: a glance at
-  // the session and one click to open or close the pane.
+  // The person closed the pane (its mark, a key): the opener shows again.
+  on('ui.close', async ($, e, next) => {
+    const r = await next(e)
+    if (e.id === PANE) await quiet(() => update($, uiAtom, u => ({ ...u, isPaneShown: false })))
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // The summary beside the mode labels under the prompt: the terminal draws
+  // it as a button that toggles the pane; other surfaces take it as a label.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    trace($, `SessionMode/${e.surface}`)
     const stats = await read($, statsAtom)
     const agents = await read($, agentsAtom)
+    const chip = footerChip(stats, agents)
+    if (e.surface !== 'terminal') return next({ ...e, props: { ...e.props, modes: [...e.props.modes, chip] } })
+    const { Box, Button, Text } = $.ui.resolve(e)
     const modes = e.props.modes
     return (
       <Box key="modes" flexDirection="row" columnGap={1}>
         {modes.length > 0 ? <Text key="m" dimColor>{modes.join(' & ')}</Text> : null}
         <Button key="cockpit-toggle" plain onPress={() => void togglePane($).catch(() => undefined)}>
-          {footerChip(stats, agents)}
+          {chip}
+        </Button>
+      </Box>
+    )
+  }).catch(($, e, next) => next(e))
+
+  // Above the prompt, while the pane is closed: one button that opens it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    trace($, `AbovePrompt/${e.surface}`)
+    if (e.surface === 'terminal' || e.props.hasSurvey) return next(e)
+    const ui = await read($, uiAtom)
+    if (ui.isPaneShown === true) return next(e)
+    const stats = await read($, statsAtom)
+    const agents = await read($, agentsAtom)
+    const { Box, Button } = $.ui.resolve(e)
+    return (
+      <Box key="opener" flexDirection="row">
+        <Button key="cockpit-open" onPress={() => void togglePane($).catch(() => undefined)}>
+          {`◆ Open Cockpit${stats.calls > 0 ? ` · ${footerChip(stats, agents).replace(/^◆ /, '')}` : ''}`}
         </Button>
       </Box>
     )

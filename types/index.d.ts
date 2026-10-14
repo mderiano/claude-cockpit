@@ -149,6 +149,8 @@ export type CockpitUi = {
   showAllAgents?: boolean
   /** The pane was opened unasked once this session (never twice). */
   autoOpened?: boolean
+  /** The pane is up on some surface (opened and not closed since). */
+  isPaneShown?: boolean
 }
 
 export type CockpitScreen = {

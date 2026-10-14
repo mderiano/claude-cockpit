@@ -539,13 +539,6 @@ const togglePane = async ($: $T): Promise<void> => {
   if (opened.isPlaced) await update($, uiAtom, u => ({ ...u, isPaneShown: true }))
 }
 
-/** Which UI sites a surface really asks this plugin to draw (a dev trace). */
-const traced = new Set<string>()
-const trace = ($: $T, tag: string): void => {
-  if (traced.has(tag)) return
-  traced.add(tag)
-  void $.fs.write('/tmp/cockpit-ui-trace.txt', [...traced].join('\n') + '\n').catch(() => undefined)
-}
 
 const celebrate = async ($: $T, key: string, text: string): Promise<void> => {
   let isNew = false
@@ -1149,7 +1142,6 @@ export const register: Register = (on, options) => {
   // The summary beside the mode labels under the prompt: the terminal draws
   // it as a button that toggles the pane; other surfaces take it as a label.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    trace($, `SessionMode/${e.surface}`)
     const stats = await read($, statsAtom)
     const agents = await read($, agentsAtom)
     const chip = footerChip(stats, agents)
@@ -1168,7 +1160,6 @@ export const register: Register = (on, options) => {
 
   // Above the prompt, while the pane is closed: one button that opens it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    trace($, `AbovePrompt/${e.surface}`)
     if (e.surface === 'terminal' || e.props.hasSurvey) return next(e)
     const ui = await read($, uiAtom)
     if (ui.isPaneShown === true) return next(e)

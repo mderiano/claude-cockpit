@@ -1146,7 +1146,7 @@ describe('cockpit screen follow-up', () => {
 })
 
 describe('cockpit footer chip', () => {
-  test('the terminal chip toggles the pane; the desktop gets a label and an opener above the prompt', WITH_SPY, async ($, on) => {
+  test('the chip beside the modes toggles the pane; an opener shows above the prompt while it is closed', WITH_SPY, async ($, on) => {
     const { opened, clock, closed, pane } = engine(on)
     on('tool.call', () => ({ result: { stdout: 'ok', stderr: '', interrupted: false }, text: 'ok' }))
     // The engine's own drawing, where the plugin hands a site back.
@@ -1175,10 +1175,9 @@ describe('cockpit footer chip', () => {
     expect(closed).toContain('cockpit')
     await ui.unmount()
     pane.isUp = false
-    // Desktop: the chip is a mode label (no button there) ...
+    // Desktop: the same button beside the modes ...
     const label = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
-    expect(await label.find({ key: 'cockpit-toggle' })).toBeUndefined()
-    expect(await label.find({ text: /◆ 1/ })).toBeDefined()
+    expect((await label.find({ key: 'cockpit-toggle' }))?.text).toContain('◆ 1')
     await label.unmount()
     // ... and above the prompt, while the pane is closed, one opener.
     const band = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 }, view: {} }

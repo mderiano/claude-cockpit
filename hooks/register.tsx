@@ -1142,13 +1142,12 @@ export const register: Register = (on, options) => {
     return r
   }).catch(($, e, next) => next(e))
 
-  // The summary beside the mode labels under the prompt: the terminal draws
-  // it as a button that toggles the pane; other surfaces take it as a label.
+  // The footer chip, beside the mode labels under the prompt: a glance at
+  // the session and one click to open or close the pane.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const stats = await read($, statsAtom)
     const agents = await read($, agentsAtom)
     const chip = footerChip(stats, agents)
-    if (e.surface !== 'terminal') return next({ ...e, props: { ...e.props, modes: [...e.props.modes, chip] } })
     const { Box, Button, Text } = $.ui.resolve(e)
     const modes = e.props.modes
     return (

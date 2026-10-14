@@ -10,7 +10,7 @@ import { filesSvg } from '../hooks/svg/files'
 import { planLive, trimDiff } from '../hooks/live'
 import type { Moment } from '../hooks/live'
 import { screenCardSvg } from '../hooks/svg/screen'
-import { agentCardSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../hooks/svg/stream'
+import { agentCardSvg, agentLiveSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../hooks/svg/stream'
 import type { SvgOut } from '../hooks/svg/base'
 import { badgeOf, BUILTIN_APPS } from '../hooks/apps'
 import type { CockpitScreen } from '../types'
@@ -82,7 +82,7 @@ const img = process.env.IMG !== undefined ? readFileSync(process.env.IMG).toStri
 const screen = { isLive: false, source: 'tool' as const, label: 'Claude Browser · computer', generation: 1, at: ago(5), b64: img, mime: 'image/jpeg', width: 1280, height: 800 }
 const evs: CockpitEvent[] = [
   { id: 'e0', tool: 'mcp__Claude_Browser__computer', cat: 'browser', title: 'Screenshot', detail: 'localhost:4777', status: 'ok', startedAt: ago(6), endedAt: ago(5), input: '{}' },
-  ...events.map(e => (e.id === 'e1' ? { ...e, agentId: undefined } : e)),
+  ...events,
   { id: 'e11', tool: 'Workflow', cat: 'agent', title: 'build-cockpit-mod', status: 'running', startedAt: ago(1800), input: '{}' },
 ]
 const plan = planLive({ events: evs, agents, workflows: [{ runId: 'r1', name: 'build-cockpit-mod', toolUseId: 'e11', startedAt: ago(1800) }], screen, changes, now: NOW })
@@ -93,6 +93,10 @@ const render = (m: Moment, isNow: boolean): string => {
     case 'call': return one(nowCallSvg(W, m.ev, agents, NOW))
     case 'agent': return one(agentCardSvg(W, m.agent, m.ev, agents, NOW))
     case 'workflow': return one(workflowCardSvg(W, m.wf, m.ev, m.agents, NOW))
+    case 'agentLive': {
+      const inner = (m.current?.cat === 'shell' ? one(nowCallSvg(W - 16, m.current, agents, NOW)) : '') + (m.edit !== undefined ? render({ kind: 'file', ev: m.edit.ev, change: m.edit.change, isNew: m.edit.isNew }, true) : '')
+      return one(agentLiveSvg(W, m.agent, m.current, m.recent, NOW)) + (inner !== '' ? `<div style="padding-left:16px;display:flex;flex-direction:column;gap:10px">${inner}</div>` : '')
+    }
     case 'run': return one(compactRunSvg(W, m.events, agents, NOW))
     case 'file': {
       const cut = m.change ? trimDiff(m.change.diff, isNow ? 40 : 10) : undefined

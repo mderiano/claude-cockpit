@@ -341,9 +341,9 @@ describe('cockpit', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps() })
       if (surface !== 'terminal') {
-        // The live view: the subagent's call in the history, under its name.
+        // The live view: the running subagent's card, with its call in it.
         const svg = await drawnSvg(ui)
-        expect(svg).toContain('HISTORY')
+        expect(svg).toContain('Agent running')
         expect(svg).toContain('x.ts')
         expect(svg).toContain('Bug hunter')
         expect(await ui.find({ key: 'f-ag-1' })).toBeUndefined()
@@ -995,6 +995,27 @@ describe('live plan', () => {
     expect(ids(p.now)).toEqual(['m2'])
     expect(ids(p.history)).toEqual(['run(sub,m1)'])
     expect(plan([]).now).toEqual([])
+  })
+
+  test('a running subagent is live now: its current call, its latest ones, its fresh edit', async () => {
+    const agent: CockpitAgent = { id: 'ag-1', description: 'Bug hunter', type: 'Explore', status: 'running', startedAt: T0, tools: 4, errors: 0, toolUseId: 'spawn' }
+    const events = [
+      call('a4', { agentId: 'ag-1', status: 'running', endedAt: undefined }),
+      edit('a3', { agentId: 'ag-1' }),
+      call('a2', { agentId: 'ag-1', tool: 'Read', cat: 'read' }),
+      call('m1'),
+      call('spawn', { tool: 'Agent', cat: 'agent' }),
+    ]
+    const change: CockpitChange = { id: 'a3', at: T0, tool: 'Edit', diff: '@@ -1,1 +1,1 @@\n-a\n+b\n', added: 1, removed: 1 }
+    const p = plan(events, { agents: [agent], changes: new Map([['a3', change]]) })
+    const live = p.now.find(m => m.kind === 'agentLive')
+    expect(live).toMatchObject({ kind: 'agentLive', agent: { id: 'ag-1' }, current: { id: 'a4' }, edit: { ev: { id: 'a3' }, change: { id: 'a3' } } })
+    expect(live?.kind === 'agentLive' ? live.recent.map(e => e.id) : []).toEqual(['a3', 'a2'])
+    // Its calls and its spawn call are not repeated below.
+    const below = JSON.stringify(p.history)
+    for (const id of ['a4', 'a3', 'a2', 'spawn']) expect(below).not.toContain(`"id":"${id}"`)
+    // A finished agent is no longer live.
+    expect(plan(events.map(e => ({ ...e, status: 'ok' as const })), { agents: [{ ...agent, status: 'done' }] }).now.some(m => m.kind === 'agentLive')).toBe(false)
   })
 
   test("a subagent's fresh edit shows now, with its change; a stale one is history", async () => {

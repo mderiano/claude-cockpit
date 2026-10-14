@@ -367,3 +367,60 @@ export const sectionSvg = (width: number, label: string, aside: string, live: bo
   if (aside !== '') body += text(width - 2, 15, aside, 't3', 10.5, { anchor: 'end' })
   return svgDoc(width, 22, body)
 }
+
+/**
+ * A subagent at work, live: its card with what it was asked, and its calls
+ * as they happen — the running one first, then the latest few.
+ */
+export const agentLiveSvg = (width: number, a: CockpitAgent, current: CockpitEvent | undefined, recent: readonly CockpitEvent[], now: number): SvgOut => {
+  const pad = 14
+  const hue = agentColor(a.id)
+  let body = iconTile('agent', pad, 14, 28)
+  const tag = pill(pad + 40, 12, a.workflowIndex !== undefined ? `Agent #${a.workflowIndex} running` : 'Agent running', '#2563eb', { dot: true, pulse: true, size: 10.5 })
+  body += tag.svg
+  const meta = [a.type === 'general-purpose' ? '' : a.type, `${a.tools} calls`, fmtDur(now - a.startedAt)].filter(s => s !== '').join(' · ')
+  body += text(width - pad, 25, fitText(meta, width - pad * 2 - 48 - tag.width, 11), 't3 num', 11, { anchor: 'end' })
+  body += text(pad + 40, 50, fitText(a.name ?? a.description, width - pad - 54, 13.5), 't1', 13.5, { weight: 620 })
+  let y = 62
+  const rows = [...(current !== undefined ? [current] : []), ...recent]
+  if (rows.length === 0) {
+    body += text(pad + 40, y + 12, 'Starting…', 't3', 11.5)
+    y += 22
+  } else {
+    body += `<path d="M${pad} ${y + 0.5}h${width - pad * 2}" class="line" stroke-width="1"/>`
+    y += 6
+    for (const ev of rows) {
+      const isCur = ev === current
+      const h = 24
+      const tip = `${CAT_NAME[ev.cat]} · ${ev.tool} · ${took(ev, now)}${ev.detail !== undefined ? `\n\n${ev.detail.replace(/ ⏎ /g, '\n').slice(0, 600)}` : ''}${ev.output !== undefined && ev.output.trim() !== '' ? `\n\n${ev.output.trimEnd().split('\n').slice(-10).join('\n').slice(-800)}` : ''}`
+      body += `<g class="row"><title>${esc(tip)}</title><rect x="${pad - 6}" y="${y}" width="${width - pad * 2 + 12}" height="${h}" rx="7" class="${isCur ? 'sunk' : 'hov'}"/>`
+      body += statusMark(ev.status, pad + 6, y + 12, 5.5)
+      body += iconTile(ev.cat, pad + 18, y + 4, 16)
+      const dur = took(ev, now)
+      const tx = pad + 40
+      const avail = width - tx - pad - measure(dur, 10.5) - 10
+      const isShell = ev.cat === 'shell' && ev.detail !== undefined
+      if (isShell) {
+        const t = fitText(ev.title, avail * 0.45, 12)
+        body += text(tx, y + 16, t, 't1', 12, { weight: isCur ? 640 : 520 })
+        const tw = measure(t, 12) + 8
+        body += text(tx + tw, y + 16, fitText((ev.detail ?? '').replace(/^\$ /, '').replace(/ ⏎ /g, ' ; '), avail - tw, 11, true), 't3 mono', 11)
+      } else {
+        const label = ev.cat === 'edit' && ev.filePath !== undefined ? basename(ev.filePath) : ev.title
+        const t = fitText(label, avail * 0.6, 12)
+        body += text(tx, y + 16, t, 't1', 12, { weight: isCur ? 640 : 520 })
+        const extra = ev.cat === 'edit' ? `+${ev.added ?? 0} −${ev.removed ?? 0}` : ev.detail ?? ''
+        if (extra !== '' && extra !== label) body += text(tx + measure(t, 12) + 8, y + 16, fitText(extra, avail - measure(t, 12) - 8, 11, ev.cat !== 'edit'), ev.cat === 'edit' ? 't2 num' : 't3 mono', 11)
+      }
+      body += text(width - pad, y + 16, dur, 't3 num', 10.5, { anchor: 'end' })
+      body += `</g>`
+      y += h + 2
+    }
+  }
+  const h = y + 8
+  return svgDoc(
+    width,
+    h,
+    `<rect x=".5" y=".5" width="${width - 1}" height="${h - 1}" rx="14" class="card"/><rect x=".5" y=".5" width="4" height="${h - 1}" rx="2" fill="${hue}"/>${body}`,
+  )
+}

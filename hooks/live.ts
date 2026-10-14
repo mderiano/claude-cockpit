@@ -9,6 +9,16 @@ export type Moment =
   | { kind: 'file'; ev: CockpitEvent; change?: CockpitChange; isNew: boolean }
   | { kind: 'agent'; ev: CockpitEvent; agent?: CockpitAgent }
   | { kind: 'workflow'; ev: CockpitEvent; wf?: CockpitWorkflow; agents: CockpitAgent[] }
+  | {
+      kind: 'agentLive'
+      agent: CockpitAgent
+      /** The call it runs now, drawn large under its card. */
+      current?: CockpitEvent
+      /** Its latest calls, newest first, as lines in its card. */
+      recent: CockpitEvent[]
+      /** The file it just changed, with its diff. */
+      edit?: { ev: CockpitEvent; change?: CockpitChange; isNew: boolean }
+    }
   | { kind: 'run'; events: CockpitEvent[] }
 
 export type LivePlan = { now: Moment[]; history: Moment[] }
@@ -30,6 +40,11 @@ export const SCREEN_FRESH_MS = 90_000
 export const EDIT_FRESH_MS = 20_000
 /** History keeps this many moments. */
 export const HISTORY_MOMENTS = 14
+/** Lines of recent activity in a live agent's card. */
+export const AGENT_RECENT = 5
+/** Agents shown live at once: loose ones, and per workflow run. */
+export const LIVE_AGENTS = 3
+export const LIVE_AGENTS_PER_RUN = 2
 
 const isAgentTool = (ev: CockpitEvent): boolean => ev.tool === 'Agent' || ev.tool === 'Task'
 const isWorkflowTool = (ev: CockpitEvent): boolean => ev.tool === 'Workflow'
@@ -47,6 +62,25 @@ const momentOf = (ev: CockpitEvent, d: LiveInput): Moment => {
   if (isAgentTool(ev)) return { kind: 'agent', ev, agent: d.agents.find(a => a.toolUseId === ev.id) }
   return { kind: 'call', ev }
 }
+
+/** A running agent, live: its current call, its latest ones, its fresh edit. */
+const agentLive = (agent: CockpitAgent, d: LiveInput, used: Set<string>): Moment => {
+  const own = d.events.filter(ev => ev.agentId === agent.id)
+  const current = own.find(ev => ev.status === 'running')
+  const edit = own.find(ev => ev.cat === 'edit' && ev.filePath !== undefined && d.now - (ev.endedAt ?? ev.startedAt) < EDIT_FRESH_MS)
+  const recent = own.filter(ev => ev.id !== current?.id).slice(0, AGENT_RECENT)
+  for (const ev of [current, edit, ...recent]) if (ev !== undefined) used.add(ev.id)
+  const m = edit !== undefined ? momentOf(edit, d) : undefined
+  return {
+    kind: 'agentLive',
+    agent,
+    current,
+    recent,
+    edit: m !== undefined && m.kind === 'file' ? { ev: m.ev, change: m.change, isNew: m.isNew } : undefined,
+  }
+}
+
+const byActivity = (a: CockpitAgent, b: CockpitAgent): number => (b.lastAt ?? b.startedAt) - (a.lastAt ?? a.startedAt)
 
 /** Calls that make a moment of their own; the rest fold into runs. */
 const isMajor = (ev: CockpitEvent): boolean =>
@@ -80,9 +114,26 @@ export const planLive = (d: LiveInput): LivePlan => {
     if (isTiedNow && tied !== undefined && tied.cat !== 'shell') used.add(tied.id)
   }
 
-  // Agents and workflow runs at work.
+  // Subagents at work, live: what each runs now and just did (a background
+  // agent runs on after its Agent call returned, so this goes by the agent).
+  const looseLive = d.agents.filter(a => a.status === 'running' && a.runId === undefined).sort(byActivity)
+  for (const a of looseLive.slice(0, LIVE_AGENTS)) {
+    now.push(agentLive(a, d, used))
+    if (a.toolUseId !== undefined) used.add(a.toolUseId)
+  }
+  // Workflow runs at work: the run's card, then its busiest agents live.
   for (const ev of main) {
-    if (ev.status !== 'running' || !(isAgentTool(ev) || isWorkflowTool(ev))) continue
+    if (ev.status !== 'running' || !isWorkflowTool(ev)) continue
+    const m = momentOf(ev, d)
+    now.push(m)
+    used.add(ev.id)
+    if (m.kind !== 'workflow') continue
+    for (const a of m.agents.filter(one => one.status === 'running').sort(byActivity).slice(0, LIVE_AGENTS_PER_RUN))
+      now.push(agentLive(a, d, used))
+  }
+  // An Agent call whose agent is not known yet (just spawned): its card.
+  for (const ev of main) {
+    if (ev.status !== 'running' || !isAgentTool(ev) || used.has(ev.id)) continue
     now.push(momentOf(ev, d))
     used.add(ev.id)
   }

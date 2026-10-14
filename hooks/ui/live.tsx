@@ -8,7 +8,7 @@ import type { LivePlan, Moment } from '../live'
 import { trimDiff } from '../live'
 import { headerSvg } from '../svg/header'
 import { screenCardSvg } from '../svg/screen'
-import { agentCardSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../svg/stream'
+import { agentCardSvg, agentLiveSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../svg/stream'
 import type { SvgOut } from '../svg/base'
 import { appBadge } from './kit'
 import type { Kit } from './kit'
@@ -51,6 +51,24 @@ const momentView = (k: Kit, d: LiveData, m: Moment, key: string, isNow: boolean,
       return svg(k, key, nowCallSvg(w, m.ev, d.agents, k.now, appBadge(k, m.ev.app)), m.ev.title)
     case 'agent':
       return svg(k, key, agentCardSvg(w, m.agent, m.ev, d.agents, k.now), m.agent?.description ?? m.ev.title, true)
+    case 'agentLive': {
+      // The agent's card with its calls as they happen; under it, large, the
+      // command it runs now and the file it just changed.
+      const card = agentLiveSvg(w, m.agent, m.current, m.recent, k.now)
+      const term = m.current !== undefined && m.current.cat === 'shell' ? nowCallSvg(w - 16, m.current, d.agents, k.now, appBadge(k, m.current.app)) : undefined
+      const edit = m.edit !== undefined ? momentView(k, d, { kind: 'file', ev: m.edit.ev, change: m.edit.change, isNew: m.edit.isNew }, 'edit', true, diffBudget) : null
+      return (
+        <Box key={key} flexDirection="column" rowGap={1}>
+          {svg(k, 'card', card, m.agent.description, true)}
+          {term !== undefined || edit !== null ? (
+            <Box key="inner" flexDirection="column" rowGap={1} paddingLeft={2}>
+              {term !== undefined ? svg(k, 'term', term, m.current?.title ?? '') : null}
+              {edit}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
     case 'workflow':
       return svg(k, key, workflowCardSvg(w, m.wf, m.ev, m.agents, k.now), m.wf?.name ?? m.ev.title, true)
     case 'run':

@@ -1,7 +1,7 @@
 {
   "name": "cockpit",
   "version": "0.1.0",
-  "description": "Live cockpit of what Claude is doing: commands and output, file diffs, subagents and workflow agents, and a live emulator/browser screen.",
+  "description": "Live cockpit of what Claude is doing: commands and output, file diffs, subagents and workflow agents, and the screen of any app it drives (browser, simulator, Blender, Godot, Unity, Unreal, any window).",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Mathieu Deriano"
@@ -22,6 +22,9 @@
     "dashboard",
     "subagents",
     "diff",
-    "simulator"
+    "simulator",
+    "blender",
+    "godot",
+    "unity"
   ]
 }

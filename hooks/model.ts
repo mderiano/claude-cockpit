@@ -279,6 +279,15 @@ export const fmtAgo = (at: number | undefined, now: number): string => {
   return fmtDur(ms)
 }
 
+/** A file size: `812 B`, `14 KB`, `3.2 MB`. */
+export const fmtBytes = (n: number): string => {
+  if (!Number.isFinite(n) || n < 0) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
 export const fmtCount = (n: number): string =>
   n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 

@@ -48,6 +48,8 @@ export type CockpitEvent = {
   removed?: number
   isTest?: boolean
   isBackground?: boolean
+  /** The app the call works with (an id of Cockpit's app registry). */
+  app?: string
 }
 
 /** One file Claude touched. */
@@ -75,6 +77,10 @@ export type CockpitChange = {
   isTruncated?: boolean
   /** No diff: the old content was too large for the tool to include one. */
   isTooLarge?: boolean
+  /** A binary asset (a .blend, an .stl...): shown with its size, never a diff. */
+  isBinary?: boolean
+  /** The asset's size in bytes, when known. */
+  size?: number
 }
 
 export type CockpitAgentStatus = 'running' | 'idle' | 'done' | 'failed' | 'killed'
@@ -156,8 +162,20 @@ export type CockpitUi = {
 export type CockpitScreen = {
   /** Polling the emulator while the Screen tab shows. */
   isLive: boolean
-  source: 'none' | 'ios' | 'android' | 'tool'
+  /**
+   * Where the frame came from: a device capture, an image in a tool's result
+   * (`tool`), an image file a command wrote (`file`), an app's window
+   * (`window`, macOS).
+   */
+  source: 'none' | 'ios' | 'android' | 'tool' | 'file' | 'window'
   label: string
+  /** The app the frame shows, when the registry knows it: its name and colour. */
+  app?: string
+  appColor?: string
+  /** The tool call the frame came from, when one did. */
+  eventId?: string
+  /** The macOS app whose window is polled (`/cockpit watch <App>`). */
+  watch?: string
   /** JPEG/PNG base64 small enough for an Svg (desktop, vscode, mobile). */
   b64?: string
   mime?: string

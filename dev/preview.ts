@@ -12,6 +12,8 @@ import type { Moment } from '../hooks/live'
 import { screenCardSvg } from '../hooks/svg/screen'
 import { agentCardSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../hooks/svg/stream'
 import type { SvgOut } from '../hooks/svg/base'
+import { badgeOf, BUILTIN_APPS } from '../hooks/apps'
+import type { CockpitScreen } from '../types'
 import { readFileSync } from 'node:fs'
 
 const NOW = 1_760_000_000_000
@@ -103,10 +105,29 @@ const live = [
   headerSvg(W, { stats, agents, files: files.length, series: stats.spark, now: NOW }),
   sectionSvg(W, 'NOW', 'working', true),
 ]
+// The app registry at work: an app-badged command, a watched window, an asset.
+const badge = (id: string) => {
+  const app = BUILTIN_APPS.find(a => a.id === id)
+  return app !== undefined ? badgeOf(app) : undefined
+}
+const blenderRun: CockpitEvent = { id: 'x1', tool: 'Bash', cat: 'shell', title: 'Blender · Render', detail: '$ blender -b scenes/shot.blend -o //renders/frame_####.png -f 12', status: 'ok', startedAt: ago(14), endedAt: ago(9), input: '{}', app: 'blender', output: 'Fra:12 Mem:182.4M | Time:00:04.21 | Rendering 64 / 64 samples\nSaved: renders/frame_0012.png\nBlender quit' }
+const godotCall: CockpitEvent = { id: 'x2', tool: 'mcp__godot__run_project', cat: 'mcp', title: 'run project · res://main.tscn', detail: 'godot', status: 'running', startedAt: ago(2), input: '{}', app: 'godot' }
+const assetEv: CockpitEvent = { id: 'x3', tool: 'Bash', cat: 'edit', title: 'shot.blend', filePath: `${cwd}/scenes/shot.blend`, status: 'ok', startedAt: ago(9), endedAt: ago(9), input: '', app: 'blender', added: 0, removed: 0 }
+// A 2x2 checker PNG stands in for the window when no IMG is given.
+const tiny = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg=='
+const windowScreen: CockpitScreen = { isLive: false, source: 'window', label: 'Krita · untitled.kra', app: 'Krita', appColor: '#3bacd4', watch: 'Krita', generation: 3, at: ago(1), b64: img ?? tiny, mime: img !== undefined ? 'image/jpeg' : 'image/png', width: 1280, height: 800 }
+const extras = [
+  sectionSvg(W, 'APPS', 'registry', false),
+  nowCallSvg(W, blenderRun, agents, NOW, badge('blender')),
+  nowCallSvg(W, godotCall, agents, NOW, badge('godot')),
+  fileHeadSvg(W, assetEv, agents, cwd, NOW, false, badge('blender'), { size: 3_355_443 }),
+  compactRunSvg(W, [blenderRun, { ...godotCall, status: 'ok', endedAt: ago(1) }, events[5]!], agents, NOW, ev => (ev.app !== undefined ? badge(ev.app) : undefined)),
+  screenCardSvg(W, windowScreen, NOW, 360),
+].filter((o): o is SvgOut => o !== undefined)
 const liveHtml = (dark: boolean) => {
   const fix = (h: string) => (dark ? h.replace(/data:image\/svg\+xml;base64,([^"]+)/g, (_, b) => `data:image/svg+xml;base64,${Buffer.from(Buffer.from(b, 'base64').toString().replace('@media (prefers-color-scheme: dark){', '@media all{')).toString('base64')}`) : h)
   const one = (o: SvgOut) => `<img src="data:image/svg+xml;base64,${Buffer.from(o.source).toString('base64')}" width="${o.width}" height="${o.height}">`
-  return fix(`<div class="col ${dark ? 'dark' : 'light'}">${live.map(one).join('')}${plan.now.map(m => render(m, true)).join('')}${one(sectionSvg(W, 'HISTORY', '', false))}${plan.history.map(m => render(m, false)).join('')}</div>`)
+  return fix(`<div class="col ${dark ? 'dark' : 'light'}">${live.map(one).join('')}${plan.now.map(m => render(m, true)).join('')}${one(sectionSvg(W, 'HISTORY', '', false))}${plan.history.map(m => render(m, false)).join('')}${extras.map(one).join('')}</div>`)
 }
 process.stdout.write(`<!doctype html><meta charset="utf-8"><title>Cockpit preview</title>
 <style>body{margin:0;display:flex;gap:24px;padding:24px;background:#e9e7e2;font:13px -apple-system}

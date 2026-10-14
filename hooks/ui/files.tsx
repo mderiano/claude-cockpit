@@ -2,7 +2,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { CockpitAgent, CockpitChange, CockpitFile } from '../../types'
-import { ADDED, agentHue, basename, CAT_COLOR, clip, dirname, fmtAgo, plural, REMOVED, shortPath } from '../model'
+import { ADDED, agentHue, basename, CAT_COLOR, clip, dirname, fmtAgo, fmtBytes, plural, REMOVED, shortPath } from '../model'
 import { agentLabel } from './feed'
 import { empty, fit, sectionTitle, setUi } from './kit'
 import type { Kit } from './kit'
@@ -75,7 +75,11 @@ const changeBlock = (k: Kit, path: string, c: CockpitChange, agents: readonly Co
         <Code key="d" source={c.diff} format="diff" path={path} wrap="truncate-end" />
       ) : (
         <Text key="d" dimColor italic>
-          {c.isTooLarge === true ? '(file too large for a diff)' : '(no lines changed)'}
+          {c.isBinary === true
+            ? `(binary asset changed${c.size !== undefined ? ` · ${fmtBytes(c.size)}` : ''})`
+            : c.isTooLarge === true
+              ? '(file too large for a diff)'
+              : '(no lines changed)'}
         </Text>
       )}
     </Box>

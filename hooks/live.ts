@@ -60,19 +60,24 @@ export const planLive = (d: LiveInput): LivePlan => {
   // The screen, while it is what Claude is working on.
   const lastScreen = d.events.find(ev => ev.cat === 'browser')
   const recentMain = main.slice(0, 6)
-  // A device frame (simulator, emulator) comes from a capture the person
-  // asked for, or Live: fresh, it is what they want to see.
-  const isFreshCapture = d.screen.source !== 'tool' && d.screen.source !== 'none' && d.screen.at !== undefined && d.now - d.screen.at < SCREEN_FRESH_MS
-  const screenIsNow =
-    d.screen.b64 !== undefined &&
-    (d.screen.isLive ||
-      isFreshCapture ||
-      (lastScreen !== undefined &&
-        (lastScreen.status === 'running' ||
-          (d.now - (lastScreen.endedAt ?? lastScreen.startedAt) < SCREEN_FRESH_MS && recentMain.some(ev => ev.id === lastScreen.id)))))
+  // A device or window frame comes from a capture the person asked for, Live
+  // or a watch: fresh, it is what they want to see.
+  const isCapture = d.screen.source === 'ios' || d.screen.source === 'android' || d.screen.source === 'window'
+  const isFreshCapture = isCapture && d.screen.at !== undefined && d.now - d.screen.at < SCREEN_FRESH_MS
+  const isRecent = (ev: CockpitEvent): boolean =>
+    ev.status === 'running' || d.now - (ev.endedAt ?? ev.startedAt) < SCREEN_FRESH_MS
+  // The call that produced the frame (an image in its result, a file it
+  // wrote, the app it drove), while it is among the newest calls.
+  const tied = d.screen.eventId !== undefined ? d.events.slice(0, 8).find(ev => ev.id === d.screen.eventId) : undefined
+  const isTiedNow = tied !== undefined && isRecent(tied) && (tied.agentId !== undefined || recentMain.some(ev => ev.id === tied.id))
+  const isScreenActionNow =
+    lastScreen !== undefined && (lastScreen.status === 'running' || (isRecent(lastScreen) && recentMain.some(ev => ev.id === lastScreen.id)))
+  const screenIsNow = d.screen.b64 !== undefined && (d.screen.isLive || isFreshCapture || isTiedNow || isScreenActionNow)
   if (screenIsNow) {
     now.push({ kind: 'screen' })
     if (lastScreen !== undefined) used.add(lastScreen.id)
+    // The frame is what that call did; a command keeps its terminal too.
+    if (isTiedNow && tied !== undefined && tied.cat !== 'shell') used.add(tied.id)
   }
 
   // Agents and workflow runs at work.

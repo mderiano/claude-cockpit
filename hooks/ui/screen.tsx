@@ -1,4 +1,5 @@
-// Cockpit: the live screen (simulator, emulator, or the last tool screenshot).
+// Cockpit: the live screen (simulator, emulator, an app's window, or the last
+// image a tool returned or a command wrote).
 import type { RenderElement } from 'claude-code'
 
 import type { CockpitScreen } from '../../types'
@@ -26,7 +27,14 @@ const SOURCE_LABEL: Record<CockpitScreen['source'], string> = {
   ios: 'iOS Simulator',
   android: 'Android emulator',
   tool: 'Tool screenshot',
+  file: 'Image file',
+  window: 'Window',
 }
+
+/** The chip's words: the app when the registry knows it, else the source. */
+const sourceChip = (s: CockpitScreen): string => (s.app !== undefined && s.app !== '' ? s.app : SOURCE_LABEL[s.source])
+const chipColor = (s: CockpitScreen): string =>
+  s.appColor !== undefined && /^#[0-9a-f]{6}$/i.test(s.appColor) ? s.appColor : CAT_COLOR.browser
 
 /** Rows above the frame: header, stats, tabs, toolbar, status, margins. */
 const CHROME_ROWS = 14
@@ -51,7 +59,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
   )
   const status = (
     <Box key="status" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
-      {chip(k, 'src', SOURCE_LABEL[s.source], CAT_COLOR.browser)}
+      {chip(k, 'src', sourceChip(s), chipColor(s))}
       {s.label !== '' ? (
         <Text key="label" bold>
           {s.label}
@@ -72,6 +80,11 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
           ● live (2 s)
         </Text>
       ) : null}
+      {s.watch !== undefined ? (
+        <Text key="watch" color="#ef4444">
+          {`● watching ${s.watch} (2 s)`}
+        </Text>
+      ) : null}
     </Box>
   )
   const error =
@@ -82,7 +95,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
     ) : null
 
   let picture: RenderElement | null = null
-  const alt = `${SOURCE_LABEL[s.source]}${s.label !== '' ? ` — ${s.label}` : ''}`
+  const alt = `${sourceChip(s)}${s.label !== '' ? ` — ${s.label}` : ''}`
   // The frame fits the room the pane has left under its own chrome, so a
   // portrait phone shows whole instead of running below the fold.
   const roomRows = Math.max(6, k.H - CHROME_ROWS)
@@ -141,7 +154,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
       ) : (
         empty(k, 'screen-empty', [
           'No image yet 📱',
-          'Start an iOS simulator or an Android emulator, then press Capture (or Live), or let Claude take a browser / simulator screenshot: it will show up here.',
+          'Start an iOS simulator or an Android emulator, then press Capture (or Live), or let Claude take a screenshot or render an image: it will show up here. /cockpit watch <App> follows an app\'s window (macOS).',
         ])
       )}
     </Box>

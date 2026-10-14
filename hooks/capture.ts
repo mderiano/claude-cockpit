@@ -135,7 +135,17 @@ export const outputOf = (tool: string, r: ToolCallResult): { output?: string; ex
  * One file a call changed. `isTooLarge`: the result carried no diff (the old
  * content was too large), `added` / `removed` then what it counted, if anything.
  */
-export type FileChange = { path: string; hunks: Hunk[]; isCreated?: boolean; isTooLarge?: boolean; added?: number; removed?: number }
+export type FileChange = {
+  path: string
+  hunks: Hunk[]
+  isCreated?: boolean
+  isTooLarge?: boolean
+  added?: number
+  removed?: number
+  /** A binary asset: no diff, its size instead. */
+  isBinary?: boolean
+  size?: number
+}
 
 /** The file changes a finished call made, from what its result carries. */
 export const changesOf = (e: Record<string, unknown>, r: ToolCallResult): FileChange[] => {

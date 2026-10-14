@@ -15,6 +15,7 @@ import type {
 
 import type { CockpitUi } from '../../types'
 import { ON_CHIP } from '../model'
+import type { Badge } from '../svg/base'
 
 /** What a press may do; each closure writes state or starts work. */
 export type CockpitActions = {
@@ -41,7 +42,12 @@ export type Kit = {
   cwd: string
   ui: CockpitUi
   act: CockpitActions
+  /** The app registry's badges by id (CockpitEvent.app). */
+  apps?: ReadonlyMap<string, Badge>
 }
+
+/** The badge of the app a call worked with, if the registry knows it. */
+export const appBadge = (k: Kit, id: string | undefined): Badge | undefined => (id !== undefined ? k.apps?.get(id) : undefined)
 
 export const setUi = (k: Kit, change: (u: CockpitUi) => CockpitUi): void => k.act.setUi(change)
 

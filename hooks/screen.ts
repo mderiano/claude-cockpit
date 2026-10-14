@@ -1,6 +1,6 @@
 // Cockpit: the pure half of the live screen: device listings, image headers,
-// screenshots found in tool results. The capture itself (processes, files)
-// runs in register.tsx, where `$` lives.
+// images found in tool results (any tool's). The capture itself (processes,
+// files) runs in register.tsx, where `$` lives.
 
 export const firstErrorLine = (text: string): string =>
   (text.split('\n').find(line => line.trim() !== '' && !/^Note:/.test(line)) ?? '').trim().slice(0, 160)
@@ -122,10 +122,16 @@ export const findImages = (content: readonly unknown[]): { data: string; mime: s
 export const deepImages = (value: unknown, depth = 0): { data: string; mime: string }[] => {
   if (depth > 6 || typeof value !== 'object' || value === null) return []
   if (Array.isArray(value)) return value.flatMap(v => deepImages(v, depth + 1))
-  const b = value as { type?: unknown; data?: unknown; mimeType?: unknown; source?: unknown }
+  const b = value as { type?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; file?: unknown }
   if (b.type === 'image') {
     if (typeof b.data === 'string' && b.data.length > 0)
       return [{ data: b.data, mime: typeof b.mimeType === 'string' ? b.mimeType : 'image/png' }]
+    // The built-in Read of an image file: `{ type: 'image', file: { base64, type } }`.
+    if (typeof b.file === 'object' && b.file !== null) {
+      const f = b.file as { base64?: unknown; type?: unknown }
+      if (typeof f.base64 === 'string' && f.base64.length > 0)
+        return [{ data: f.base64, mime: typeof f.type === 'string' ? f.type : 'image/png' }]
+    }
     if (typeof b.source === 'object' && b.source !== null) {
       const s = b.source as { data?: unknown; media_type?: unknown }
       if (typeof s.data === 'string' && s.data.length > 0)

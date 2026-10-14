@@ -155,6 +155,29 @@ export const iconTile = (cat: CockpitCategory, x: number, y: number, size = 26):
   )
 }
 
+/** An app as the drawings know it: its name, colour and glyph. */
+export type Badge = { name: string; color: string; glyph: string }
+
+/** A colour the markup may carry as is (the registry's are user-written). */
+const safeColor = (c: string): string => (/^#[0-9a-f]{3,8}$/i.test(c) ? c : '#64748b')
+
+/** The app's glyph in a tile of its colour, where the category icon would be. */
+export const appTile = (app: Badge, x: number, y: number, size = 26): string => {
+  const color = safeColor(app.color)
+  const glyph = [...app.glyph].slice(0, 3).join('')
+  const fs = size * (glyph.length <= 1 ? 0.56 : glyph.length === 2 ? 0.44 : 0.34)
+  return (
+    `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">` +
+    `<rect width="${size}" height="${size}" rx="${(size * 0.28).toFixed(1)}" fill="${color}" fill-opacity=".16"/>` +
+    text(size / 2, size / 2 + fs * 0.36, glyph, '', fs, { weight: 760, anchor: 'middle', fill: color }) +
+    `</g>`
+  )
+}
+
+/** The app's badge: a pill of its colour with its name. */
+export const appPill = (app: Badge, x: number, y: number, size = 10.5): { svg: string; width: number } =>
+  pill(x, y, app.name, safeColor(app.color), { size })
+
 /** A status mark centred on (cx, cy): spinner, check, cross or slash. */
 export const statusMark = (status: CockpitStatus | CockpitAgentStatus, cx: number, cy: number, r = 7): string => {
   const at = `translate(${cx.toFixed(1)} ${cy.toFixed(1)})`

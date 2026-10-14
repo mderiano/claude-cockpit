@@ -21,6 +21,7 @@ import type {
   CockpitStats,
   CockpitStatus,
   CockpitTab,
+  CockpitUi,
 } from '../types'
 import {
   agentAnswer,
@@ -62,6 +63,30 @@ import {
 } from './model'
 import { deepImages, findImages, firstErrorLine, imageSize, parseAdb, parseSimctl, sipsError } from './screen'
 import type { Device } from './screen'
+import {
+  appCommandTitle,
+  appForCall,
+  appForWindow,
+  appsFromConfig,
+  appScreenshotTool,
+  badgeOf,
+  BINARY_EXT,
+  BUILTIN_APPS,
+  commandDir,
+  IMAGE_EXT,
+  isBinaryAsset,
+  isShotTool,
+  mcpServer,
+  mcpToolName,
+  mergeApps,
+  mimeOfPath,
+  parseWindowInfo,
+  pathsInCommand,
+  resolvePath,
+  SCREEN_RECORDING_HELP,
+  WINDOW_JXA,
+} from './apps'
+import type { AppDef } from './apps'
 import { agentRefs, agentsView } from './ui/agents'
 import { feedView, visibleRefs } from './ui/feed'
 import { filesView, selectedFile } from './ui/files'
@@ -217,10 +242,30 @@ let device: Device | undefined
 let captureFailures = 0
 /** Device tools this session showed missing (the spawn itself rejected). */
 const missingTools = new Set<string>()
-/** The newest tool screenshot waiting to be taken; one is taken at a time. */
-type ToolImage = { image: { data: string; mime: string }; label: string }
+/**
+ * An image to show: base64 a tool returned, or a file a command wrote. The
+ * newest waiting is taken; one at a time.
+ */
+type ImageIn = { data?: string; mime: string; path?: string; size?: number }
+/** Where a frame comes from: its source, the app it shows, the call behind it. */
+type FrameMeta = { source: 'tool' | 'file'; app?: AppDef; eventId?: string }
+type ToolImage = { image: ImageIn; label: string; meta: FrameMeta }
 let pendingImage: ToolImage | undefined
 let isTakingImage = false
+/** The last image shown, by its call (or its bytes): the same picture seen twice is shown once. */
+let lastImageKey = ''
+/** The app registry: built-ins merged with ~/.claude/cockpit.json and <cwd>/.cockpit.json. */
+let apps: AppDef[] = [...BUILTIN_APPS]
+/** Each app server's screenshot tool, once found. */
+const shotTools = new Map<string, string>()
+/** Servers seen without one: not listed again before this time (a server may connect later). */
+const noShotUntil = new Map<string, number>()
+/** Window capture: one at a time, backing off after failures. */
+let isCapturingWindow = false
+let windowFailures = 0
+let windowRetryTick = 0
+/** Screen Recording is missing: no capture unasked until the next /cockpit watch. */
+let windowDenied = false
 /** Newest calls the desktop's live view reads. */
 const LIVE_EVENTS = 60
 /** After a browser action, a screenshot follows once the actions pause. */
@@ -345,6 +390,9 @@ const captureDevice = async ($: $T): Promise<void> => {
       ...s,
       source: found.kind,
       label,
+      app: undefined,
+      appColor: undefined,
+      eventId: undefined,
       b64: frame.b64,
       mime: 'image/jpeg',
       width: frame.width,
@@ -369,7 +417,7 @@ const captureDevice = async ($: $T): Promise<void> => {
         error:
           stops && s.isLive
             ? `${message} Live stopped after ${LIVE_MAX_FAILURES} failed captures.`
-            : message === NO_DEVICE && s.source === 'tool'
+            : message === NO_DEVICE && (s.source === 'tool' || s.source === 'file' || s.source === 'window')
               ? undefined
               : message,
       })),
@@ -391,44 +439,68 @@ const drawsOnTerminal = async ($: $T): Promise<boolean> => {
 }
 
 /**
- * A screenshot a tool returned: kept when small, else shrunk to a JPEG for
- * the Svg surfaces; on the terminal, a PNG file its `Image` reads whole (the
- * decoded file itself when the tool already sent a PNG).
+ * An image to show: kept when small, else shrunk to a JPEG for the Svg
+ * surfaces; on the terminal, a PNG file its `Image` reads whole (the image's
+ * own file when it is one, or the decoded bytes when a tool sent a PNG).
+ * A file is read as bytes only when small; else `sips` reads it in place.
  */
-const takeToolImage = async ($: $T, image: { data: string; mime: string }, label: string): Promise<void> => {
+const takeToolImage = async ($: $T, image: ImageIn, label: string, meta: FrameMeta): Promise<void> => {
   try {
     const at = await $.clock.now()
     const isTerminal = await drawsOnTerminal($)
     const isPng = image.mime === 'image/png'
-    const needsShrink = image.data.length > MAX_SVG_B64
-    // A small PNG draws from its base64 on the terminal; anything else as a file.
-    const needsFile = isTerminal && (!isPng || needsShrink)
-    let b64 = image.data
+    let b64: string
     let mime = image.mime
     let pngPath: string | undefined
-    if (needsShrink || needsFile) {
+    if (image.path !== undefined) {
       const base = await tmpBase($)
-      const ext = isPng ? 'png' : image.mime === 'image/webp' ? 'webp' : image.mime === 'image/gif' ? 'gif' : 'jpg'
-      const raw = `${base}tool-raw.${ext}`
-      const decode = await $.process.run(['base64', '-D', '-o', raw], { stdin: image.data, timeoutMs: 15_000 })
-      if (decode.exitCode !== 0) throw new Error(firstErrorLine(decode.stderr) || 'base64 decode failed')
-      if (needsFile && isPng) pngPath = raw
-      else if (needsFile) {
-        const png = `${base}tool.png`
-        const r = await $.process.run(['sips', '-s', 'format', 'png', raw, '--out', png], { timeoutMs: 15_000 })
-        if (sipsError(r) === undefined) pngPath = png
-      }
-      if (needsShrink) {
-        const frame = await toSvgFrame($, raw, `${base}tool.jpg`)
+      const isSmall = image.size !== undefined && image.size <= Math.floor((MAX_SVG_B64 * 3) / 4)
+      const read = isSmall ? (await $.fs.read(image.path, { as: 'bytes' })).base64 : undefined
+      if (read !== undefined && read.length <= MAX_SVG_B64) b64 = read
+      else {
+        const frame = await toSvgFrame($, image.path, `${base}file.jpg`)
         b64 = frame.b64
         mime = 'image/jpeg'
+      }
+      if (isTerminal && isPng) pngPath = image.path
+      else if (isTerminal) {
+        const png = `${base}file.png`
+        const r = await $.process.run(['sips', '-s', 'format', 'png', image.path, '--out', png], { timeoutMs: 15_000 })
+        if (sipsError(r) === undefined) pngPath = png
+      }
+    } else {
+      const data = image.data ?? ''
+      const needsShrink = data.length > MAX_SVG_B64
+      // A small PNG draws from its base64 on the terminal; anything else as a file.
+      const needsFile = isTerminal && (!isPng || needsShrink)
+      b64 = data
+      if (needsShrink || needsFile) {
+        const base = await tmpBase($)
+        const ext = isPng ? 'png' : image.mime === 'image/webp' ? 'webp' : image.mime === 'image/gif' ? 'gif' : 'jpg'
+        const raw = `${base}tool-raw.${ext}`
+        const decode = await $.process.run(['base64', '-D', '-o', raw], { stdin: data, timeoutMs: 15_000 })
+        if (decode.exitCode !== 0) throw new Error(firstErrorLine(decode.stderr) || 'base64 decode failed')
+        if (needsFile && isPng) pngPath = raw
+        else if (needsFile) {
+          const png = `${base}tool.png`
+          const r = await $.process.run(['sips', '-s', 'format', 'png', raw, '--out', png], { timeoutMs: 15_000 })
+          if (sipsError(r) === undefined) pngPath = png
+        }
+        if (needsShrink) {
+          const frame = await toSvgFrame($, raw, `${base}tool.jpg`)
+          b64 = frame.b64
+          mime = 'image/jpeg'
+        }
       }
     }
     const dims = imageSize(b64)
     await setScreen($, s => ({
       ...s,
-      source: 'tool',
+      source: meta.source,
       label,
+      app: meta.app?.name,
+      appColor: meta.app?.color,
+      eventId: meta.eventId,
       b64,
       mime,
       width: dims?.width,
@@ -440,22 +512,35 @@ const takeToolImage = async ($: $T, image: { data: string; mime: string }, label
     }))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    await quiet(() => setScreen($, s => ({ ...s, error: `Tool screenshot: ${clean(message).slice(0, 160)}` })))
+    const what = meta.source === 'file' ? 'Image file' : 'Tool screenshot'
+    await quiet(() => setScreen($, s => ({ ...s, error: `${what}: ${clean(message).slice(0, 160)}` })))
   }
 }
 
+/** What tells one picture from another: its call, else its bytes or file. */
+const imageKey = (image: ImageIn, meta: FrameMeta): string => {
+  if (meta.eventId !== undefined) return `ev:${meta.eventId}`
+  if (image.path !== undefined) return `file:${image.path}:${image.size ?? 0}`
+  const data = image.data ?? ''
+  return `b64:${data.length}:${data.slice(0, 48)}:${data.slice(-48)}`
+}
+
 /**
- * Tool screenshots one at a time, through the same files: a frame arriving
- * while one is taken replaces any still waiting (only the newest shows).
+ * Images one at a time, through the same files: a frame arriving while one
+ * is taken replaces any still waiting (only the newest shows). The same
+ * picture twice (a result and its transcript row) is shown once.
  */
-const queueToolImage = async ($: $T, image: { data: string; mime: string }, label: string): Promise<void> => {
-  pendingImage = { image, label }
+const queueToolImage = async ($: $T, image: ImageIn, label: string, meta: FrameMeta): Promise<void> => {
+  const key = imageKey(image, meta)
+  if (key === lastImageKey) return
+  lastImageKey = key
+  pendingImage = { image, label, meta }
   if (isTakingImage) return
   isTakingImage = true
   try {
     for (let next: ToolImage | undefined = pendingImage; next !== undefined; next = pendingImage as ToolImage | undefined) {
       pendingImage = undefined
-      await takeToolImage($, next.image, next.label)
+      await takeToolImage($, next.image, next.label, next.meta)
     }
   } finally {
     isTakingImage = false
@@ -472,7 +557,139 @@ const setLive = async ($: $T, isLive: (was: boolean) => boolean): Promise<boolea
   return next.isLive
 }
 
-/** The screenshot call that shows what a screen tool just did, if any. */
+// ---------------------------------------------------------------- labels
+/** `get_viewport_screenshot` → `get viewport screenshot`. */
+const pretty = (name: string): string => name.replace(/_/g, ' ')
+
+/**
+ * What a frame from a call is called: the app first when the registry knows
+ * it ("Blender · get viewport screenshot", "OpenSCAD · out/p.png"), else the
+ * MCP server and tool, the tool and its file, or the tool.
+ */
+const frameLabel = (tool: string, app: AppDef | undefined, file?: string): string => {
+  const server = mcpServer(tool)
+  const what = file !== undefined && file !== '' ? file : server !== undefined ? pretty(mcpToolName(tool)) : tool
+  if (app !== undefined) return `${app.name} · ${what}`
+  if (server !== undefined) return tool.split('__').slice(1).join(' · ').replace(/_/g, ' ')
+  return file !== undefined && file !== '' ? `${tool} · ${file}` : tool
+}
+
+/** The file a call names, as the person would say it (relative to the session). */
+const fileOfCall = (input: Record<string, unknown>, cwd: string): string | undefined => {
+  const path = str(input.file_path) ?? str(input.notebook_path)
+  if (path === undefined) return undefined
+  return cwd !== '' && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : basename(path)
+}
+
+const sessionCwd = async ($: $T): Promise<string> => {
+  try {
+    return await $.session.cwd()
+  } catch {
+    return ''
+  }
+}
+
+const homeDir = async ($: $T): Promise<string> => {
+  try {
+    return (await $.env.get('HOME')) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+// ---------------------------------------------------------------- app registry
+/** Built-ins, then ~/.claude/cockpit.json, then the project's .cockpit.json (each wins by id). */
+const loadApps = async ($: $T, cwd: string): Promise<void> => {
+  const lists: AppDef[][] = []
+  const home = await homeDir($)
+  const paths = [home !== '' ? `${home}/.claude/cockpit.json` : '', cwd !== '' ? `${cwd.replace(/\/$/, '')}/.cockpit.json` : '']
+  for (const path of paths) {
+    if (path === '') continue
+    try {
+      const text = await $.fs.read(path)
+      lists.push(appsFromConfig(JSON.parse(text) as unknown).apps)
+    } catch {
+      // no file, or not JSON: the built-ins alone
+    }
+  }
+  apps = mergeApps(BUILTIN_APPS, ...lists)
+  shotTools.clear()
+  noShotUntil.clear()
+}
+
+// ---------------------------------------------------------------- window capture (macOS)
+/** One frame of an app's frontmost window, never the whole screen. */
+const captureWindow = async ($: $T, name: string, opts: { eventId?: string } = {}): Promise<void> => {
+  if (isCapturingWindow) return
+  isCapturingWindow = true
+  const app = appForWindow(apps, name)
+  try {
+    await setScreen($, s => ({ ...s, isBusy: true }))
+    const base = await tmpBase($)
+    const png = `${base}window.png`
+    const jpg = `${base}window.jpg`
+    let listed: { exitCode: number; stdout: string; stderr: string }
+    try {
+      listed = await $.process.run(['osascript', '-l', 'JavaScript', '-e', WINDOW_JXA, name], { timeoutMs: 10_000 })
+    } catch (err) {
+      throw new Error(isMissing(err) ? 'Window capture works on macOS only (no osascript here).' : 'Listing the windows took too long.')
+    }
+    if (listed.exitCode !== 0) throw new Error(firstErrorLine(listed.stderr || listed.stdout) || `osascript failed (${listed.exitCode})`)
+    const found = parseWindowInfo(listed.stdout)
+    if (found === undefined) throw new Error('Could not read the window list.')
+    if (found.id <= 0) throw new Error(`No on-screen window of ${name}.`)
+    // Without Screen Recording no window title is visible: a capture would be blank.
+    if (found.named === 0 && found.count > 0) throw new Error(SCREEN_RECORDING_HELP)
+    const startedAt = await $.clock.now()
+    let shot: { exitCode: number; stdout: string; stderr: string }
+    try {
+      shot = await $.process.run(['screencapture', '-x', '-o', '-l', String(found.id), png], { timeoutMs: 15_000 })
+    } catch {
+      throw new Error(SCREEN_RECORDING_HELP)
+    }
+    const stat = await $.fs.stat(png).catch(() => undefined)
+    // A failed capture, an empty file or the previous frame left in place.
+    const isFresh = stat !== undefined && stat.kind === 'file' && stat.size > 1000 && stat.mtimeMs >= startedAt - 5000
+    if (shot.exitCode !== 0 || !isFresh) throw new Error(SCREEN_RECORDING_HELP)
+    const frame = await toSvgFrame($, png, jpg)
+    const at = await $.clock.now()
+    windowFailures = 0
+    const appName = app?.name ?? name
+    const title = clean(found.title).slice(0, 120)
+    await setScreen($, s => ({
+      ...s,
+      source: 'window',
+      label: title !== '' && title !== appName ? `${appName} · ${title}` : appName,
+      app: appName,
+      appColor: app?.color,
+      eventId: opts.eventId,
+      b64: frame.b64,
+      mime: 'image/jpeg',
+      width: frame.width,
+      height: frame.height,
+      pngPath: png,
+      generation: s.generation + 1,
+      at,
+      error: undefined,
+      isBusy: false,
+    }))
+  } catch (err) {
+    const message = clean(err instanceof Error ? err.message : String(err)).slice(0, 200)
+    const isDenied = message === SCREEN_RECORDING_HELP
+    if (isDenied) windowDenied = true
+    windowFailures += 1
+    // Polled every 2 s; after failures, 4 s, 8 s, ... up to 30 s.
+    windowRetryTick = tickCount + Math.min(30, 2 ** (windowFailures + 1))
+    await quiet(() =>
+      setScreen($, s => ({ ...s, isBusy: false, watch: isDenied ? undefined : s.watch, error: message })),
+    )
+  } finally {
+    isCapturingWindow = false
+  }
+}
+
+// ---------------------------------------------------------------- follow-ups after a call
+/** The screenshot call that shows what a browser tool just did, if any. */
 const screenshotCallFor = (e: ToolCallInput): { tool: string; args: Record<string, unknown> } | undefined => {
   const input = e as unknown as { action?: unknown; tabId?: unknown }
   if (input.action === 'screenshot' || input.action === 'zoom') return undefined
@@ -482,19 +699,69 @@ const screenshotCallFor = (e: ToolCallInput): { tool: string; args: Record<strin
   return undefined
 }
 
+/** The screenshot tool of an app's MCP server, among the session's tools. */
+const findShotTool = async ($: $T, app: AppDef, tool: string): Promise<string | undefined> => {
+  const server = mcpServer(tool)
+  if (server === undefined) return undefined
+  const known = shotTools.get(server)
+  if (known !== undefined) return known === tool ? undefined : known
+  const now = await $.clock.now()
+  if ((noShotUntil.get(server) ?? 0) > now) return undefined
+  const names = (await $.tool.list()).map(t => t.name)
+  const found = appScreenshotTool(app, tool, names)
+  if (found !== undefined) shotTools.set(server, found)
+  // None at all on this server (asked as from no tool of it): not asked again for a minute.
+  else if (appScreenshotTool(app, `mcp__${server}__`, names) === undefined) noShotUntil.set(server, now + 60_000)
+  return found
+}
+
+/** Arguments a config may give a screenshot tool, the envelope's keys kept out. */
+const shotArgs = (app: AppDef): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(app.screenshot?.args ?? {})) if (key !== 'tool' && key !== 'tool_use_id') out[key] = value
+  return out
+}
+
 /**
- * After a screen action whose result held no picture, look at the screen:
+ * Once an app's actions pause, look at it: its own MCP screenshot tool when
+ * the check allows it without asking the person, else its window when the
+ * registry names one.
+ */
+const scheduleAppShot = ($: $T, e: ToolCallInput, app: AppDef): void => {
+  const isMcp = mcpServer(e.tool) !== undefined
+  if (isMcp && isShotTool(e.tool)) return
+  if (!isMcp && app.window === undefined) return
+  shotTimer?.cancel()
+  shotTimer = $.clock.after(SHOT_DELAY_MS, () => {
+    shotTimer = undefined
+    void quiet(async () => {
+      if (isMcp) {
+        const shotTool = await findShotTool($, app, e.tool)
+        if (shotTool !== undefined) {
+          const args = shotArgs(app)
+          const verdict = await $.tool.check({ tool: shotTool, input: args })
+          if (verdict.decision === 'allow') {
+            const shot: ToolCallResult = await $.tool.call({ tool: shotTool, ...args } as never)
+            const found = deepImages(shot.result)
+            const last = found[found.length - 1]
+            if (last !== undefined) {
+              await queueToolImage($, last, frameLabel(shotTool, app), { source: 'tool', app, eventId: e.tool_use_id })
+              return
+            }
+          }
+        }
+      }
+      if (app.window !== undefined && !windowDenied) await captureWindow($, app.window, { eventId: e.tool_use_id })
+    })
+  })
+}
+
+/**
+ * After a browser action whose result held no picture, look at the screen:
  * the simulator through simctl, a browser through its own screenshot tool
  * (only where that call is allowed without asking the person).
  */
-const scheduleShot = ($: $T, e: ToolCallInput, r: ToolCallResult): void => {
-  if (r.deny !== undefined) return
-  const images = deepImages(r.result)
-  if (images.length > 0) {
-    const last = images[images.length - 1]
-    if (last !== undefined) $.clock.after(0, () => void queueToolImage($, last, e.tool.split('__').slice(1).join(' · ').replace(/_/g, ' ')))
-    return
-  }
+const scheduleShot = ($: $T, e: ToolCallInput): void => {
   const isSim = e.tool.startsWith('mcp__Claude_Code_iOS_Simulator__')
   const call = isSim ? undefined : screenshotCallFor(e)
   if (!isSim && call === undefined) return
@@ -509,9 +776,103 @@ const scheduleShot = ($: $T, e: ToolCallInput, r: ToolCallResult): void => {
       const shot: ToolCallResult = await $.tool.call({ tool: call.tool, ...call.args } as never)
       const found = deepImages(shot.result)
       const last = found[found.length - 1]
-      if (last !== undefined) await queueToolImage($, last, call.tool.split('__').slice(1).join(' · ').replace(/_/g, ' '))
+      if (last !== undefined) await queueToolImage($, last, frameLabel(call.tool, appForCall(apps, call.tool, {})), { source: 'tool', app: appForCall(apps, call.tool, {}) })
     })
   })
+}
+
+/**
+ * What follows a call Claude made: any image in its result goes to the
+ * screen (any tool: a Read of a PNG, an MCP render); else the screen it
+ * drove is looked at. A command's files are looked at once it ended.
+ */
+const followUp = ($: $T, e: ToolCallInput, r: ToolCallResult, app: AppDef | undefined): void => {
+  if (r.deny !== undefined) return
+  const images = deepImages(r.result)
+  const last = images[images.length - 1]
+  if (last !== undefined) {
+    const input = e as unknown as Record<string, unknown>
+    $.clock.after(0, () =>
+      void quiet(async () => {
+        const file = fileOfCall(input, await sessionCwd($))
+        await queueToolImage($, last, frameLabel(e.tool, app, file), { source: 'tool', app, eventId: e.tool_use_id })
+      }),
+    )
+    return
+  }
+  if (e.tool === 'Bash') return
+  if (isScreenTool(e.tool) && app?.screenshot === undefined && app?.window === undefined) return scheduleShot($, e)
+  if (app !== undefined) scheduleAppShot($, e, app)
+}
+
+/** Files a command named and changed since it started: newest first. */
+const freshFiles = async ($: $T, paths: readonly string[], dir: string, home: string, since: number): Promise<{ path: string; size: number; mtimeMs: number }[]> => {
+  const out: { path: string; size: number; mtimeMs: number }[] = []
+  for (const p of paths) {
+    const path = resolvePath(p, dir, home)
+    const stat = await $.fs.stat(path).catch(() => undefined)
+    if (stat !== undefined && stat.kind === 'file' && stat.mtimeMs >= since) out.push({ path, size: stat.size, mtimeMs: stat.mtimeMs })
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs)
+}
+
+/** Adds a call's row to the feed index; rows past the bound are dropped. */
+const pushFeed = async ($: $T, id: string, agentId: string | undefined): Promise<void> => {
+  let evicted: string[] = []
+  await feedQ($, list => {
+    const next = [...list.filter(one => one.id !== id), agentId !== undefined ? { id, agent: agentId } : { id }]
+    evicted = next.slice(0, Math.max(0, next.length - MAX_EVENTS)).map(one => one.id)
+    return next.slice(-MAX_EVENTS)
+  })
+  for (const gone of evicted) await $.state.set({ plugin: 'cockpit', key: 'event', id: gone }, null)
+}
+
+/**
+ * A command ended: the image it wrote goes to the screen (`openscad -o
+ * out/p.png`, `blender -b x.blend -o //r.png -f 1`), the binary assets it
+ * changed get an asset card. Returns whether an image was shown.
+ */
+const afterCommand = async ($: $T, ev: CockpitEvent, command: string, app: AppDef | undefined, now: number): Promise<boolean> => {
+  const images = pathsInCommand(command, IMAGE_EXT)
+  const assets = pathsInCommand(command, BINARY_EXT)
+  if (images.length === 0 && assets.length === 0) return false
+  const cwd = await sessionCwd($)
+  const home = await homeDir($)
+  const dir = commandDir(command, cwd, home)
+  // Written during the call (a little slack for the file system's clock).
+  const since = ev.startedAt - 2000
+  let isShown = false
+  const written = (await freshFiles($, images, dir, home, since))[0]
+  const mime = written !== undefined ? mimeOfPath(written.path) : undefined
+  if (written !== undefined && mime !== undefined) {
+    const shown = cwd !== '' && written.path.startsWith(`${cwd}/`) ? written.path.slice(cwd.length + 1) : basename(written.path)
+    await queueToolImage($, { path: written.path, size: written.size, mime }, frameLabel(ev.tool, app, shown), { source: 'file', app, eventId: ev.id })
+    isShown = true
+  }
+  const changed = (await freshFiles($, assets, dir, home, since)).slice(0, 4)
+  for (const [i, asset] of changed.entries()) {
+    const own = appForCall(apps, 'Write', { file_path: asset.path }) ?? app
+    const assetEv: CockpitEvent = {
+      id: `${ev.id}~asset${i}`,
+      tool: ev.tool,
+      cat: 'edit',
+      title: basename(asset.path),
+      detail: asset.path,
+      agentId: ev.agentId,
+      status: 'ok',
+      startedAt: ev.startedAt,
+      endedAt: now,
+      input: '',
+      filePath: asset.path,
+      added: 0,
+      removed: 0,
+      app: own?.id,
+    }
+    await $.state.set({ plugin: 'cockpit', key: 'event', id: assetEv.id }, assetEv)
+    await pushFeed($, assetEv.id, ev.agentId)
+    await recordChanges($, assetEv, [{ path: asset.path, hunks: [], isBinary: true, size: asset.size, added: 0, removed: 0 }], now)
+  }
+  return isShown
 }
 
 // ================================================================ status, milestones, ticker
@@ -588,7 +949,11 @@ const tick = async ($: $T): Promise<void> => {
     if (tickCount % 2 === 0) {
       const screen = await read($, screenAtom)
       // The desktop's live view has no Screen tab: Live refreshes it there.
-      if (screen.isLive && (ui.tab === 'screen' || !(await drawsOnTerminal($)))) void captureDevice($)
+      const isInView = screen.isLive || screen.watch !== undefined ? ui.tab === 'screen' || !(await drawsOnTerminal($)) : false
+      // A watched window first (backing off after failures), else Live's device.
+      if (screen.watch !== undefined && isInView) {
+        if (tickCount >= windowRetryTick) void captureWindow($, screen.watch)
+      } else if (screen.isLive && isInView) void captureDevice($)
     }
     if (tickCount % 5 === 0 && agents.some(a => a.status === 'running' || a.status === 'idle')) {
       const listed = await $.agent.list()
@@ -621,16 +986,18 @@ const ensureTicker = ($: $T): void => {
 }
 
 // ================================================================ tool calls
-const onToolStart = async ($: $T, e: ToolCallInput): Promise<CockpitEvent> => {
+const onToolStart = async ($: $T, e: ToolCallInput, app: AppDef | undefined): Promise<CockpitEvent> => {
   const now = await $.clock.now()
   const input = e as unknown as Record<string, unknown>
   const tool = String(e.tool)
   const d = describe(input)
+  // An app's command says what it does to the app: "Blender · Render".
+  const appTitle = app !== undefined && tool === 'Bash' ? appCommandTitle(app, str(input.command) ?? '') : undefined
   const ev: CockpitEvent = {
     id: e.tool_use_id,
     tool,
     cat: categorize(tool),
-    title: clip(clean(d.title), 200),
+    title: clip(clean(appTitle ?? d.title), 200),
     detail: d.detail !== undefined ? clip(clean(d.detail), 400) : undefined,
     agentId: e.agentId,
     status: 'running',
@@ -639,18 +1006,10 @@ const onToolStart = async ($: $T, e: ToolCallInput): Promise<CockpitEvent> => {
     filePath: d.filePath !== undefined ? clean(d.filePath) : undefined,
     isTest: d.isTest,
     isBackground: d.isBackground,
+    app: app?.id,
   }
   await $.state.set({ plugin: 'cockpit', key: 'event', id: ev.id }, ev)
-  let evicted: string[] = []
-  await feedQ($, list => {
-    const next = [
-      ...list.filter(one => one.id !== ev.id),
-      e.agentId !== undefined ? { id: ev.id, agent: e.agentId } : { id: ev.id },
-    ]
-    evicted = next.slice(0, Math.max(0, next.length - MAX_EVENTS)).map(one => one.id)
-    return next.slice(-MAX_EVENTS)
-  })
-  for (const id of evicted) await $.state.set({ plugin: 'cockpit', key: 'event', id }, null)
+  await pushFeed($, ev.id, e.agentId)
   await statsQ($, s => ({
     ...s,
     startedAt: s.startedAt === 0 ? now : s.startedAt,
@@ -700,6 +1059,8 @@ const recordChanges = async (
       removed: text.removed,
       isTruncated: text.isTruncated ? true : undefined,
       isTooLarge: change.isTooLarge,
+      isBinary: change.isBinary,
+      size: change.size,
     }
     await update($, { plugin: 'cockpit', key: 'changes', id: change.path }, list =>
       [...(list ?? []).filter(one => one.id !== entry.id), entry].slice(-MAX_CHANGES_PER_FILE),
@@ -727,7 +1088,14 @@ const recordChanges = async (
   return { added, removed }
 }
 
-const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallResult): Promise<void> => {
+/** A binary asset a call wrote: its size, never a diff of its bytes as text. */
+const asAsset = async ($: $T, change: FileChange): Promise<FileChange> => {
+  if (!isBinaryAsset(change.path)) return change
+  const stat = await $.fs.stat(change.path).catch(() => undefined)
+  return { path: change.path, hunks: [], isCreated: change.isCreated, isBinary: true, size: stat?.size, added: 0, removed: 0 }
+}
+
+const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallResult, app: AppDef | undefined): Promise<void> => {
   const now = await $.clock.now()
   const input = e as unknown as Record<string, unknown>
   const tool = ev.tool
@@ -736,7 +1104,8 @@ const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallR
   const current = await read($, { plugin: 'cockpit', key: 'event', id: ev.id })
   const wasRunning = current?.status !== 'error' || current.endedAt === undefined
   const { output, exitCode } = outputOf(tool, r)
-  const changes = status === 'ok' ? changesOf(input, r) : []
+  const changes: FileChange[] = []
+  for (const change of status === 'ok' ? changesOf(input, r) : []) changes.push(await asAsset($, change))
   const counts = changes.length > 0 ? await recordChanges($, ev, changes, now) : { added: 0, removed: 0 }
   const done: CockpitEvent = {
     ...ev,
@@ -811,6 +1180,13 @@ const onToolEnd = async ($: $T, e: ToolCallInput, ev: CockpitEvent, r: ToolCallR
   await checkMilestones($)
   await refreshStatus($)
 
+  // A command: the image it wrote shows, the assets it changed get a card;
+  // else an app with a window of its own is looked at.
+  if (tool === 'Bash' && status !== 'denied' && ev.isBackground !== true) {
+    const isShown = await afterCommand($, done, str(input.command) ?? '', app, now)
+    if (!isShown && app !== undefined && app.window !== undefined) scheduleAppShot($, e, app)
+  }
+
   // Claude just drove the simulator: refresh the Screen tab if it is in view.
   if (touchesDevice(tool, str(input.command) ?? '')) {
     const ui = await read($, uiAtom)
@@ -870,7 +1246,8 @@ const resetForClear = async ($: $T, deadline: () => boolean): Promise<void> => {
   await filesQ($, () => [])
   await agentsQ($, () => [])
   await update($, workflowsAtom, () => [])
-  await setScreen($, s => ({ ...EMPTY_SCREEN, isLive: s.isLive }))
+  await setScreen($, s => ({ ...EMPTY_SCREEN, isLive: s.isLive, watch: s.watch }))
+  lastImageKey = ''
   await update($, uiAtom, u => ({ ...u, filter: 'all', expanded: null, file: null, agent: null, limit: EMPTY_UI.limit, offset: 0, openRuns: [], showAllAgents: false }))
   await $.state.set({ plugin: 'cockpit', key: 'now' }, now)
   lastStatus = ''
@@ -912,7 +1289,7 @@ const TAB_WORDS: Record<string, CockpitTab> = {
   sim: 'screen',
   live: 'screen',
 }
-const COMMAND_WORDS = 'feed, files, agents, screen, live [on|off], close'
+const COMMAND_WORDS = 'feed, files, agents, screen, live [on|off], watch <App>|off, close'
 
 // ================================================================ registration
 export const register: Register = (on, options) => {
@@ -934,9 +1311,11 @@ export const register: Register = (on, options) => {
       await $.command.register({
         name: 'cockpit',
         description: 'Live view of what Claude is doing: commands, diffs, agents, screen',
-        argumentHint: '[feed|files|agents|screen|live [on|off]|close]',
+        argumentHint: '[feed|files|agents|screen|live [on|off]|watch <App>|watch off|close]',
         immediate: true,
       })
+      // Which apps the session's tools and commands are recognised as.
+      await loadApps($, e.cwd ?? (await sessionCwd($)))
       const now = await $.clock.now()
       await statsQ($, s => (s.startedAt === 0 ? { ...s, startedAt: now } : s))
       // A reload keeps the state but not the module: rows the old module
@@ -987,9 +1366,11 @@ export const register: Register = (on, options) => {
     // The row is written beside the call, never ahead of it: the tool starts
     // at once, whatever the state writes cost.
     let started: Promise<CockpitEvent | undefined>
+    let app: AppDef | undefined
     try {
       ensureTicker($)
-      started = onToolStart($, e).catch(() => undefined)
+      app = appForCall(apps, e.tool, e as unknown as Record<string, unknown>)
+      started = onToolStart($, e, app).catch(() => undefined)
     } catch {
       started = Promise.resolve(undefined)
     }
@@ -1005,12 +1386,12 @@ export const register: Register = (on, options) => {
     // round-trips) follows once this dispatch resolved.
     const ev = await started
     try {
-      if (isScreenTool(e.tool)) scheduleShot($, e, r)
+      followUp($, e, r, app)
     } catch {
       // the screen stays as it was
     }
     try {
-      if (ev !== undefined) $.clock.after(0, () => void quiet(() => onToolEnd($, e, ev, r)))
+      if (ev !== undefined) $.clock.after(0, () => void quiet(() => onToolEnd($, e, ev, r, app)))
     } catch {
       // a lost end: the turn's reconcile closes the row
     }
@@ -1090,16 +1471,24 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // Screenshots returned by browser / simulator / computer-use tools.
+  // Any image a tool's result row carries: what Claude sees, the person sees.
   on('session.append', { door: 'tool-result' }, async ($, e, next) => {
     try {
       const origin = e.origin as { kind?: string; tool?: string }
-      if (origin.kind === 'tool' && typeof origin.tool === 'string' && isScreenTool(origin.tool)) {
+      if (origin.kind === 'tool' && typeof origin.tool === 'string') {
+        const tool = origin.tool
         const images = findImages(e.message.content)
         const last = images[images.length - 1]
         if (last !== undefined) {
-          const label = origin.tool.split('__').slice(1).join(' · ').replace(/_/g, ' ')
-          $.clock.after(0, () => void queueToolImage($, last, label))
+          $.clock.after(0, () =>
+            void quiet(async () => {
+              // The call's own row says which file and app it was.
+              const ev = last.toolUseId !== undefined ? await read($, { plugin: 'cockpit', key: 'event', id: last.toolUseId }) : undefined
+              const app = ev?.app !== undefined ? apps.find(a => a.id === ev.app) : appForCall(apps, tool, {})
+              const file = ev?.detail !== undefined && ev.tool === 'Read' ? fileOfCall({ file_path: ev.detail }, await sessionCwd($)) : undefined
+              await queueToolImage($, last, frameLabel(tool, app, file), { source: 'tool', app, eventId: last.toolUseId })
+            }),
+          )
         }
       }
     } catch {
@@ -1112,6 +1501,35 @@ export const register: Register = (on, options) => {
   // save to say what went wrong.
   on('command.run', { command: 'cockpit' }, async ($, e) => {
     const [word = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (word === 'watch') {
+      // `/cockpit watch <App name>`: the name as typed (macOS names its windows' owner so).
+      const name = clip(clean(e.args.trim().slice(5).trim()), 80)
+      const screen = await read($, screenAtom)
+      if (name === '') {
+        return {
+          text:
+            screen.watch !== undefined
+              ? `Cockpit is watching ${screen.watch}. /cockpit watch off stops.`
+              : 'Usage: /cockpit watch <App name> (macOS; needs Screen Recording), /cockpit watch off.',
+        }
+      }
+      if (name.toLowerCase() === 'off') {
+        await setScreen($, s => ({ ...s, watch: undefined, error: undefined }))
+        if (screen.watch !== undefined) $.ui.toast(`Cockpit · stopped watching ${screen.watch}`, { timeoutMs: 3000 })
+        return {}
+      }
+      windowDenied = false
+      windowFailures = 0
+      windowRetryTick = 0
+      await setScreen($, s => ({ ...s, watch: name, error: undefined }))
+      ensureTicker($)
+      await update($, uiAtom, (u): CockpitUi => ({ ...u, tab: 'screen', offset: 0 }))
+      const opened = await $.ui.open({ id: PANE, title: 'Cockpit', focus: true })
+      if (opened.isPlaced) await update($, uiAtom, u => ({ ...u, isPaneShown: true }))
+      $.ui.toast(`Cockpit · watching ${name} ●`, { timeoutMs: 3000 })
+      $.clock.after(0, () => void captureWindow($, name))
+      return opened.isPlaced ? {} : { text: `Watching ${name}, but Cockpit could not open here: ${opened.reason}` }
+    }
     if (word === 'close' || word === 'off') {
       await $.ui.close({ id: PANE })
       await update($, uiAtom, u => ({ ...u, isPaneShown: false }))
@@ -1209,10 +1627,12 @@ export const register: Register = (on, options) => {
           .catch(() => undefined)
       },
       capture: () => {
-        void captureDevice($)
+        // A watched window is what "capture" means while it is watched.
+        void (screen.watch !== undefined ? captureWindow($, screen.watch) : captureDevice($))
       },
     }
     const k: Kit = {
+      apps: new Map(apps.map(a => [a.id, badgeOf(a)])),
       Box: els.Box,
       Text: els.Text,
       Button: els.Button,
@@ -1313,7 +1733,8 @@ export const register: Register = (on, options) => {
       <Box key="cockpit" flexDirection="column" paddingX={1}>
         {header(k, { stats, agents, files: files.length })}
         {tabs(k, counts, () => {
-          if (screen.b64 === undefined || screen.source !== 'tool') void captureDevice($)
+          if (screen.watch !== undefined) void captureWindow($, screen.watch)
+          else if (screen.b64 === undefined || screen.source === 'ios' || screen.source === 'android') void captureDevice($)
         })}
         {body}
         <Box key="foot" marginTop={1}>

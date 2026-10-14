@@ -10,6 +10,7 @@ import { headerSvg } from '../svg/header'
 import { screenCardSvg } from '../svg/screen'
 import { agentCardSvg, compactRunSvg, fileHeadSvg, nowCallSvg, sectionSvg, workflowCardSvg } from '../svg/stream'
 import type { SvgOut } from '../svg/base'
+import { appBadge } from './kit'
 import type { Kit } from './kit'
 
 export type LiveData = {
@@ -47,16 +48,17 @@ const momentView = (k: Kit, d: LiveData, m: Moment, key: string, isNow: boolean,
       return svg(k, key, card, `Screen: ${d.screen.label}`)
     }
     case 'call':
-      return svg(k, key, nowCallSvg(w, m.ev, d.agents, k.now), m.ev.title)
+      return svg(k, key, nowCallSvg(w, m.ev, d.agents, k.now, appBadge(k, m.ev.app)), m.ev.title)
     case 'agent':
       return svg(k, key, agentCardSvg(w, m.agent, m.ev, d.agents, k.now), m.agent?.description ?? m.ev.title, true)
     case 'workflow':
       return svg(k, key, workflowCardSvg(w, m.wf, m.ev, m.agents, k.now), m.wf?.name ?? m.ev.title, true)
     case 'run':
-      return svg(k, key, compactRunSvg(w, m.events, d.agents, k.now), `${m.events.length} calls`, true)
+      return svg(k, key, compactRunSvg(w, m.events, d.agents, k.now, ev => appBadge(k, ev.app)), `${m.events.length} calls`, true)
     case 'file': {
-      const head = fileHeadSvg(w, m.ev, d.agents, k.cwd, k.now, m.isNew)
-      const showDiff = m.change !== undefined && m.change.diff !== '' && (isNow || diffBudget.left > 0)
+      const asset = m.change?.isBinary === true ? { size: m.change.size } : undefined
+      const head = fileHeadSvg(w, m.ev, d.agents, k.cwd, k.now, m.isNew, appBadge(k, m.ev.app), asset)
+      const showDiff = asset === undefined && m.change !== undefined && m.change.diff !== '' && (isNow || diffBudget.left > 0)
       if (!isNow && showDiff) diffBudget.left -= 1
       const cut = showDiff && m.change !== undefined ? trimDiff(m.change.diff, isNow ? NOW_DIFF_LINES : HISTORY_DIFF_LINES) : undefined
       return (

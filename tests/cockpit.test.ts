@@ -9,6 +9,7 @@ import { planLive, trimDiff } from '../hooks/live'
 import type { LiveInput } from '../hooks/live'
 import { clean, EMPTY_SCREEN, EMPTY_STATS, sparkText } from '../hooks/model'
 import { imageSize, parseSimctl, sipsError } from '../hooks/screen'
+import { appCommandTitle, appForCall, appsFromConfig, appScreenshotTool, BINARY_EXT, BUILTIN_APPS, IMAGE_EXT, mergeApps, pathsInCommand, resolvePath, SCREEN_RECORDING_HELP } from '../hooks/apps'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
@@ -87,8 +88,18 @@ const peek = async <K extends keyof Peek>($: CommandRunner, key: K, id = ''): Pr
   return JSON.parse(r.text ?? 'null') as Peek[K] | null
 }
 
+type RunOut = { exitCode?: number; stdout?: string; stderr?: string }
+type StatOut = { kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number }
+/** What a test scripts of the world: processes, files, the session's tools. */
+type World = {
+  run?: (argv: readonly string[]) => RunOut | undefined
+  stat?: (path: string) => StatOut | undefined
+  read?: (path: string) => string | { base64: string } | undefined
+  tools?: string[]
+}
+
 /** The engine beneath the plugin: everything it may ask, answered from memory. */
-const engine = (on: On) => {
+const engine = (on: On, world: World = {}) => {
   const toasts: string[] = []
   const statuses: (string | undefined)[] = []
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
@@ -117,16 +128,35 @@ const engine = (on: On) => {
   })
   on('session.cwd', () => ({ value: '/proj' }))
   // No simulator, no adb: the capture reports it plainly.
-  on('process.run', ($, e) => ({
-    value: {
-      exitCode: e.argv[0] === 'xcrun' ? 0 : 1,
-      stdout: e.argv[0] === 'xcrun' ? '{"devices":{}}' : '',
-      stderr: '',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  return { toasts, statuses, clock, opened, closed, pane }
+  const argvs: string[][] = []
+  on('process.run', ($, e) => {
+    argvs.push([...e.argv])
+    const custom = world.run?.(e.argv)
+    if (custom !== undefined)
+      return { value: { exitCode: 0, stdout: '', stderr: '', ...custom, isStdoutTruncated: false, isStderrTruncated: false } }
+    return {
+      value: {
+        exitCode: e.argv[0] === 'xcrun' ? 0 : 1,
+        stdout: e.argv[0] === 'xcrun' ? '{"devices":{}}' : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  // No file unless the test says so (no config, no image).
+  on('fs.stat', ($, e) => {
+    const s = world.stat?.(e.path)
+    if (s === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { ...s, isLink: false } }
+  })
+  on('fs.read', ($, e) => {
+    const v = world.read?.(e.path)
+    if (v === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: v }
+  })
+  on('tool.list', () => ({ value: (world.tools ?? []).map(name => ({ name, description: '', mcp: name.startsWith('mcp__') })) }))
+  return { toasts, statuses, clock, opened, closed, pane, argvs }
 }
 
 describe('cockpit', () => {
@@ -1188,5 +1218,333 @@ describe('cockpit footer chip', () => {
     expect(opened.length).toBe(n + 1)
     expect(await opener.find({ key: 'cockpit-open' })).toBeUndefined()
     await opener.unmount()
+  })
+})
+
+describe('app registry', () => {
+  const bash = (command: string) => ({ tool: 'Bash', command })
+  test('MCP servers, commands and file extensions name their app', async () => {
+    const apps = [...BUILTIN_APPS]
+    expect(appForCall(apps, 'mcp__blender__execute_blender_code', {})?.id).toBe('blender')
+    expect(appForCall(apps, 'mcp__godot-mcp__run_project', {})?.id).toBe('godot')
+    expect(appForCall(apps, 'mcp__Claude_Browser__navigate', {})?.id).toBe('claude-browser')
+    expect(appForCall(apps, 'mcp__Claude_Code_iOS_Simulator__control', {})?.id).toBe('ios-simulator')
+    expect(appForCall(apps, 'mcp__linear__list_issues', {})).toBeUndefined()
+    expect(appForCall(apps, 'Bash', bash('openscad -o out/p.png part.scad'))?.id).toBe('openscad')
+    expect(appForCall(apps, 'Bash', bash('/Applications/Blender.app/Contents/MacOS/Blender -b x.blend -f 1'))?.id).toBe('blender')
+    expect(appForCall(apps, 'Bash', bash('cd game && godot --headless --export-release "Web" build/index.html'))?.id).toBe('godot')
+    expect(appForCall(apps, 'Bash', bash('UnrealEditor-Cmd Game.uproject -run=cook'))?.id).toBe('unreal')
+    expect(appForCall(apps, 'Bash', bash('/Applications/Unity/Hub/Editor/6000.0/Unity.app/Contents/MacOS/Unity -batchmode -runTests'))?.id).toBe('unity')
+    expect(appForCall(apps, 'Bash', bash('kicad-cli pcb export gerbers board.kicad_pcb'))?.id).toBe('kicad')
+    expect(appForCall(apps, 'Bash', bash('xcrun simctl list'))?.id).toBe('ios-simulator')
+    expect(appForCall(apps, 'Bash', bash('ls -la'))).toBeUndefined()
+    // A folder named after an app is no app.
+    expect(appForCall(apps, 'Bash', bash('ls blender-assets/'))).toBeUndefined()
+    expect(appForCall(apps, 'Edit', { file_path: '/p/scenes/main.tscn' })?.id).toBe('godot')
+    expect(appForCall(apps, 'Write', { file_path: '/p/Part.FCStd' })?.id).toBe('freecad')
+    expect(appForCall(apps, 'Read', { file_path: '/p/board.kicad_sch' })?.id).toBe('kicad')
+    expect(appForCall(apps, 'Edit', { file_path: '/p/a.ts' })).toBeUndefined()
+  })
+
+  test("an app's command is titled by what it does", async () => {
+    const app = (id: string) => BUILTIN_APPS.find(a => a.id === id)!
+    expect(appCommandTitle(app('blender'), 'blender -b x.blend -o //render_####.png -f 1')).toBe('Blender · Render')
+    expect(appCommandTitle(app('godot'), 'godot --headless --export-release "Web" build/index.html')).toBe('Godot · Export')
+    expect(appCommandTitle(app('openscad'), 'openscad -o out/preview.png part.scad')).toBe('OpenSCAD · Render')
+    expect(appCommandTitle(app('openscad'), 'openscad -o out/part.stl part.scad')).toBe('OpenSCAD · Export')
+    expect(appCommandTitle(app('unity'), 'Unity -batchmode -runTests -projectPath .')).toBe('Unity · Test')
+    expect(appCommandTitle(app('unreal'), 'RunUAT.sh BuildCookRun -project=G.uproject')).toBe('Unreal Engine · Build')
+    // `export VAR=` is the shell's, not the app's.
+    expect(appCommandTitle(app('blender'), 'export PATH=/x:$PATH; blender --version')).toBeUndefined()
+  })
+
+  test('image and asset paths are read off a command', async () => {
+    expect(pathsInCommand('openscad -o out/preview.png part.scad', IMAGE_EXT)).toEqual(['out/preview.png'])
+    expect(pathsInCommand('blender -b x.blend -o //render_####.png -f 1', IMAGE_EXT)).toEqual([])
+    expect(pathsInCommand('blender -b scenes/x.blend -o //shots/a.png -f 1', IMAGE_EXT)).toEqual(['scenes/shots/a.png'])
+    expect(pathsInCommand('tool --output=/tmp/a.jpg && convert x > "b c.webp"', IMAGE_EXT)).toEqual(['/tmp/a.jpg', 'b c.webp'])
+    expect(pathsInCommand('magick *.png out.gif', IMAGE_EXT)).toEqual(['out.gif'])
+    expect(pathsInCommand('freecadcmd make.py Part.FCStd', BINARY_EXT)).toEqual(['Part.FCStd'])
+    expect(resolvePath('out/p.png', '/proj', '/Users/me')).toBe('/proj/out/p.png')
+    expect(resolvePath('~/x/../y.png', '/proj', '/Users/me')).toBe('/Users/me/y.png')
+  })
+
+  test("the user's config adds apps, replaces built-ins by id and ignores bad entries", async () => {
+    const user = appsFromConfig({
+      apps: [
+        { name: 'Krita', color: '#3bacd4', glyph: 'K', match: { command: '(^|[\\s/])krita(\\s|$)', files: ['.kra'] }, window: 'krita' },
+        { id: 'blender', name: 'Blender 4', color: '#ff7700', match: { mcp: 'blender' } },
+        { name: 'Broken', match: { command: '([' } },
+        { color: '#000000', match: { mcp: 'x' } },
+        { name: 'Nothing to match' },
+        'not an object',
+      ],
+    })
+    expect(user.apps.map(a => a.id)).toEqual(['krita', 'blender'])
+    expect(user.ignored).toBe(4)
+    expect(appsFromConfig({ nope: true })).toEqual({ apps: [], ignored: 0 })
+    const merged = mergeApps(BUILTIN_APPS, user.apps)
+    expect(appForCall(merged, 'Bash', { command: 'krita --export a.png x.kra' })?.name).toBe('Krita')
+    expect(appForCall(merged, 'Write', { file_path: '/p/x.kra' })?.id).toBe('krita')
+    expect(appForCall(merged, 'mcp__blender__get_scene_info', {})?.name).toBe('Blender 4')
+    expect(merged.filter(a => a.id === 'blender')).toHaveLength(1)
+  })
+
+  test('a screenshot tool is found on the same server, never the call itself', async () => {
+    const blender = BUILTIN_APPS.find(a => a.id === 'blender')!
+    const tools = ['mcp__blender__get_scene_info', 'mcp__blender__get_viewport_screenshot', 'mcp__other__screenshot']
+    expect(appScreenshotTool(blender, 'mcp__blender__get_scene_info', tools)).toBe('mcp__blender__get_viewport_screenshot')
+    expect(appScreenshotTool(blender, 'mcp__blender__get_viewport_screenshot', tools)).toBeUndefined()
+    const godot = BUILTIN_APPS.find(a => a.id === 'godot')!
+    expect(appScreenshotTool(godot, 'mcp__godot__run', ['mcp__godot__run', 'mcp__godot__capture_viewport'])).toBe('mcp__godot__capture_viewport')
+    expect(appScreenshotTool(godot, 'mcp__godot__run', ['mcp__godot__run'])).toBeUndefined()
+  })
+})
+
+describe('cockpit universal screen', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const T0 = 1_700_000_000_000
+  const ok = { result: { stdout: '', stderr: '', interrupted: false }, text: '' }
+
+  test('an OpenSCAD render that writes out/p.png puts that image on the screen', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on, {
+      stat: path => (path === '/proj/out/p.png' ? { kind: 'file', size: PNG.length, mtimeMs: T0 + 40 } : undefined),
+      read: path => (path === '/proj/out/p.png' ? { base64: PNG } : undefined),
+    })
+    on('tool.call', () => ok)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    const r = await $.tool.call({ tool: 'Bash', command: 'openscad -o out/p.png part.scad', description: 'Render the part', tool_use_id: 'scad-1' })
+    expect(r).toEqual(ok)
+    await clock.settle()
+    expect(await peek($, 'event', 'scad-1')).toMatchObject({ app: 'openscad', title: 'OpenSCAD · Render', status: 'ok' })
+    const screen = await peek($, 'screen')
+    expect(screen).toMatchObject({ source: 'file', app: 'OpenSCAD', eventId: 'scad-1', b64: PNG, mime: 'image/png', width: 1, height: 1 })
+    expect(screen?.label).toContain('OpenSCAD')
+    expect(screen?.label).toContain('out/p.png')
+    for (const surface of ['desktop', 'terminal'] as const) {
+      const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps() })
+      if (surface === 'terminal') {
+        await ui.press({ key: 'tab-screen' })
+        expect(await ui.find({ text: /OpenSCAD · out\/p\.png/ })).toBeDefined()
+      } else {
+        // The frame leads NOW, the command's terminal under it, both badged.
+        const svgs = (await ui.findAll({ type: 'Svg' })).map(one => String(one.props.source))
+        expect(svgs[2]).toContain('<image href="data:image/png;base64,')
+        expect(svgs[2]).toContain('OpenSCAD')
+        expect(svgs.some(s => s.includes('openscad -o out/p.png') && s.includes('OpenSCAD') && s.includes('Render'))).toBe(true)
+      }
+      await ui.unmount()
+    }
+  })
+
+  test('an image the command did not write this time stays off the screen', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on, {
+      stat: path => (path === '/proj/out/p.png' ? { kind: 'file', size: 100, mtimeMs: T0 - 3_600_000 } : undefined),
+      read: () => ({ base64: PNG }),
+    })
+    on('tool.call', () => ok)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Bash', command: 'ls out/p.png', tool_use_id: 'ls-1' })
+    await clock.settle()
+    expect((await peek($, 'screen'))?.b64).toBeUndefined()
+  })
+
+  test('a Read of a PNG puts it on the screen', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    on('tool.call', () => ({ result: { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 70 } }, text: '' }))
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Read', file_path: '/proj/shots/home.png', tool_use_id: 'rd-1' })
+    await clock.settle()
+    const screen = await peek($, 'screen')
+    expect(screen).toMatchObject({ source: 'tool', label: 'Read · shots/home.png', b64: PNG, eventId: 'rd-1' })
+    // The same picture in the transcript row is not taken twice.
+    const gen = screen?.generation
+    await $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'rd-1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }] }] },
+      door: 'tool-result',
+      origin: { kind: 'tool', tool: 'Read' },
+      uuid: 'row-rd',
+    })
+    await clock.settle()
+    expect((await peek($, 'screen'))?.generation).toBe(gen)
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    const svgs = (await ui.findAll({ type: 'Svg' })).map(one => String(one.props.source))
+    expect(svgs[2]).toContain('<image href="data:image/png;base64,')
+    expect(svgs[2]).toContain('shots/home.png')
+    await ui.unmount()
+  })
+
+  test("any tool's image in its transcript row reaches the screen", WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fig-1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }] }] },
+      door: 'tool-result',
+      origin: { kind: 'tool', tool: 'mcp__figma__get_image' },
+      uuid: 'row-fig',
+    })
+    await clock.settle()
+    expect(await peek($, 'screen')).toMatchObject({ source: 'tool', label: 'figma · get image', b64: PNG })
+  })
+
+  for (const decision of ['allow', 'ask'] as const) {
+    test(`a Blender MCP action with no image asks for its viewport only when allowed (${decision})`, WITH_SPY, async ($, on) => {
+      const { clock } = engine(on, { tools: ['mcp__blender__execute_blender_code', 'mcp__blender__get_viewport_screenshot'] })
+      const calls: { tool: string; max_size?: number }[] = []
+      on('tool.check', () => ({ decision }))
+      on('tool.call', ($, e) => {
+        calls.push(e as unknown as { tool: string; max_size?: number })
+        return (e.tool as string) === 'mcp__blender__get_viewport_screenshot'
+          ? { result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] }, text: '' }
+          : { result: { content: [{ type: 'text', text: 'done' }] }, text: 'done' }
+      })
+      await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+      await $.tool.call({ tool: 'mcp__blender__execute_blender_code', code: 'bpy.ops.mesh.primitive_cube_add()', tool_use_id: 'bl-1' } as never)
+      await clock.settle()
+      expect(calls).toHaveLength(1)
+      await clock.advance(1000)
+      await clock.settle()
+      const shots = calls.filter(c => c.tool === 'mcp__blender__get_viewport_screenshot')
+      expect((await peek($, 'event', 'bl-1'))?.app).toBe('blender')
+      if (decision === 'allow') {
+        expect(shots).toEqual([expect.objectContaining({ max_size: 800 })])
+        expect(await peek($, 'screen')).toMatchObject({ source: 'tool', app: 'Blender', label: 'Blender · get viewport screenshot', eventId: 'bl-1', b64: PNG })
+        const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+        expect((await ui.findAll({ type: 'Svg' })).map(one => String(one.props.source))[2]).toContain('<image')
+        await ui.unmount()
+      } else {
+        expect(shots).toEqual([])
+        expect((await peek($, 'screen'))?.b64).toBeUndefined()
+      }
+      expect((await peek($, 'feed'))?.map(f => f.id)).toEqual(['bl-1'])
+    })
+  }
+
+  const finder = JSON.stringify({ id: 500, width: 1056, height: 436, title: 'Downloads', named: 14, count: 20 })
+
+  test('/cockpit watch Finder captures its window through osascript and screencapture', WITH_SPY, async ($, on) => {
+    const { clock, argvs, pane, toasts } = engine(on, {
+      run: argv => (argv[0] === 'osascript' ? { stdout: finder } : argv[0] === 'screencapture' || argv[0] === 'sips' ? {} : undefined),
+      stat: path => (path.endsWith('window.png') ? { kind: 'file', size: 173_126, mtimeMs: T0 + 10 } : undefined),
+      read: path => (path.endsWith('window.jpg') ? { base64: PNG } : undefined),
+    })
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    const r = await $.command.run({ command: 'cockpit', args: 'watch Finder', origin: ORIGIN, presentation: PRESENTATION })
+    expect(r.text).toBeUndefined()
+    await clock.settle()
+    expect(toasts.some(t => t.includes('watching Finder'))).toBe(true)
+    const osa = argvs.find(a => a[0] === 'osascript')
+    expect(osa?.slice(0, 4)).toEqual(['osascript', '-l', 'JavaScript', '-e'])
+    expect(osa?.[4]).toContain('CGWindowListCopyWindowInfo')
+    expect(osa?.[5]).toBe('Finder')
+    expect(argvs).toContainEqual(['screencapture', '-x', '-o', '-l', '500', expect.stringContaining('window.png')])
+    // Never the whole screen: every capture names a window.
+    expect(argvs.filter(a => a[0] === 'screencapture').every(a => a.includes('-l'))).toBe(true)
+    const screen = await peek($, 'screen')
+    expect(screen).toMatchObject({ source: 'window', watch: 'Finder', app: 'Finder', label: 'Finder · Downloads', mime: 'image/jpeg' })
+    expect(screen?.error).toBeUndefined()
+    // The live view shows it, and the watch keeps polling while the pane is up.
+    pane.isUp = true
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    const svg = await drawnSvg(ui)
+    expect(svg).toContain('aria-label="Finder"')
+    expect(svg).toContain('Watching')
+    const before = argvs.filter(a => a[0] === 'screencapture').length
+    await clock.advance(4000)
+    await clock.settle()
+    expect(argvs.filter(a => a[0] === 'screencapture').length).toBeGreaterThan(before)
+    await ui.unmount()
+    await $.command.run({ command: 'cockpit', args: 'watch off', origin: ORIGIN, presentation: PRESENTATION })
+    expect((await peek($, 'screen'))?.watch).toBeUndefined()
+    const after = argvs.filter(a => a[0] === 'screencapture').length
+    await clock.advance(4000)
+    await clock.settle()
+    expect(argvs.filter(a => a[0] === 'screencapture').length).toBe(after)
+  })
+
+  for (const failure of ['no window titles', 'screencapture fails'] as const) {
+    test(`a missing Screen Recording permission says so and stops the watch (${failure})`, WITH_SPY, async ($, on) => {
+      const listing = failure === 'no window titles' ? JSON.stringify({ id: 500, width: 10, height: 10, title: '', named: 0, count: 20 }) : finder
+      const { clock, argvs } = engine(on, {
+        run: argv =>
+          argv[0] === 'osascript' ? { stdout: listing } : argv[0] === 'screencapture' ? { exitCode: 1, stderr: 'could not create image from window' } : undefined,
+        stat: () => undefined,
+      })
+      await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+      await $.command.run({ command: 'cockpit', args: 'watch Finder', origin: ORIGIN, presentation: PRESENTATION })
+      await clock.settle()
+      const screen = await peek($, 'screen')
+      expect(screen?.error).toBe(SCREEN_RECORDING_HELP)
+      expect(screen?.watch).toBeUndefined()
+      expect(screen?.b64).toBeUndefined()
+      expect(argvs.filter(a => a[0] === 'screencapture')).toHaveLength(failure === 'no window titles' ? 0 : 1)
+      const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+      expect(await ui.find({ text: /Screen Recording permission for Claude/ })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  test('a registry app with a window is captured after a command that drives it', WITH_SPY, async ($, on) => {
+    const config = { apps: [{ name: 'Krita', color: '#3bacd4', glyph: 'K', match: { command: '(^|[\\s/])krita(\\s|$)' }, window: 'krita' }, { name: 'bad', match: { command: '((' } }] }
+    const krita = JSON.stringify({ id: 77, width: 800, height: 600, title: 'untitled.kra', named: 9, count: 12 })
+    const { clock, argvs } = engine(on, {
+      run: argv => (argv[0] === 'osascript' ? { stdout: krita } : argv[0] === 'screencapture' || argv[0] === 'sips' ? {} : undefined),
+      stat: path => (path.endsWith('window.png') ? { kind: 'file', size: 50_000, mtimeMs: T0 + 900 } : undefined),
+      read: path => (path === '/Users/test/.claude/cockpit.json' ? JSON.stringify(config) : path.endsWith('window.jpg') ? { base64: PNG } : undefined),
+    })
+    on('tool.call', () => ok)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Bash', command: 'krita --nosplash x.kra', tool_use_id: 'kr-1' })
+    await clock.settle()
+    expect((await peek($, 'event', 'kr-1'))?.app).toBe('krita')
+    await clock.advance(1000)
+    await clock.settle()
+    expect(argvs.find(a => a[0] === 'osascript')?.[5]).toBe('krita')
+    expect(await peek($, 'screen')).toMatchObject({ source: 'window', app: 'Krita', appColor: '#3bacd4', eventId: 'kr-1' })
+  })
+
+  test('a binary asset a command changed gets an asset card, not a diff', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on, {
+      stat: path => (path === '/proj/scene.blend' ? { kind: 'file', size: 3_355_443, mtimeMs: T0 + 500 } : undefined),
+    })
+    on('tool.call', () => ok)
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Bash', command: 'blender -b scene.blend --python add_cube.py', description: 'Add a cube', tool_use_id: 'bl-2' })
+    await clock.settle()
+    expect((await peek($, 'event', 'bl-2'))?.title).toBe('Add a cube')
+    const changes = await peek($, 'changes', '/proj/scene.blend')
+    expect(changes?.[0]).toMatchObject({ isBinary: true, size: 3_355_443, diff: '', added: 0, removed: 0 })
+    expect((await peek($, 'files'))?.[0]).toMatchObject({ path: '/proj/scene.blend' })
+    expect((await peek($, 'feed'))?.map(f => f.id)).toEqual(['bl-2', 'bl-2~asset0'])
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps() })
+      if (surface === 'terminal') {
+        await ui.press({ key: 'tab-files' })
+        expect(await ui.find({ text: /binary asset changed · 3\.2 MB/ })).toBeDefined()
+      } else {
+        const svg = await drawnSvg(ui)
+        expect(svg).toContain('Asset changed')
+        expect(svg).toContain('scene.blend')
+        expect(svg).toContain('3.2 MB')
+        expect(svg).toContain('Blender')
+        expect(await ui.find({ type: 'Code' })).toBeUndefined()
+      }
+      await ui.unmount()
+    }
+  })
+
+  test('a frame tied to a call is now while that call is recent', async () => {
+    const frame = { ...EMPTY_SCREEN, source: 'file' as const, label: 'OpenSCAD · out/p.png', b64: PNG, eventId: 'scad', at: T0 }
+    const scad: CockpitEvent = { id: 'scad', tool: 'Bash', cat: 'shell', title: 'OpenSCAD · Render', status: 'ok', startedAt: T0, endedAt: T0 + 100, input: '', app: 'openscad' }
+    const read: CockpitEvent = { id: 'rd', tool: 'Read', cat: 'read', title: 'a.png', status: 'ok', startedAt: T0, endedAt: T0 + 10, input: '' }
+    const base = { agents: [], workflows: [], changes: new Map(), now: T0 + 1000 }
+    // A command keeps its terminal under the frame.
+    expect(planLive({ ...base, events: [scad], screen: frame }).now.map(m => m.kind)).toEqual(['screen', 'call'])
+    // A Read's picture is the read itself.
+    expect(planLive({ ...base, events: [read], screen: { ...frame, eventId: 'rd' } }).now.map(m => m.kind)).toEqual(['screen'])
+    // Long past, or no longer among the newest calls: no screen.
+    expect(planLive({ ...base, events: [scad], screen: frame, now: T0 + 200_000 }).now.map(m => m.kind)).toEqual(['call'])
+    // A file frame is no capture: without its call it is not now.
+    expect(planLive({ ...base, events: [read], screen: frame }).now.map(m => m.kind)).toEqual(['call'])
   })
 })

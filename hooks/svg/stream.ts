@@ -2,13 +2,17 @@
 // and workflow cards, and the head of a file change (its diff is the
 // engine's own Code, drawn under it).
 import type { CockpitAgent, CockpitCategory, CockpitEvent, CockpitWorkflow } from '../../types'
-import { basename, dirname, fmtAgo, fmtCount, fmtDur, shortPath } from '../model'
-import { agentColor, CAT_NAME, esc, fitText, HUE, iconTile, measure, pill, statusMark, svgDoc, text } from './base'
-import type { SvgOut } from './base'
+import { basename, dirname, fmtAgo, fmtBytes, fmtCount, fmtDur, shortPath } from '../model'
+import { agentColor, appPill, appTile, CAT_NAME, esc, fitText, HUE, iconTile, measure, pill, statusMark, svgDoc, text } from './base'
+import type { Badge, SvgOut } from './base'
 import { agentName } from './feed'
 
 const took = (ev: CockpitEvent, now: number): string =>
   ev.status === 'running' ? fmtDur(Math.max(0, now - ev.startedAt)) : fmtDur((ev.endedAt ?? ev.startedAt) - ev.startedAt)
+
+/** A title without the app's name it starts with, when a badge already says it. */
+const bare = (title: string, app: Badge | undefined): string =>
+  app !== undefined && title.startsWith(`${app.name} · `) ? title.slice(app.name.length + 3) : title
 
 const ago = (at: number, now: number): string => {
   const a = fmtAgo(at, now)
@@ -35,7 +39,13 @@ export const COMPACT_ROWS = 3
  * A run of small calls (commands, reads, searches): one summary line, then
  * the newest few as single lines. Everything else stays in the tooltip.
  */
-export const compactRunSvg = (width: number, events: readonly CockpitEvent[], agents: readonly CockpitAgent[], now: number): SvgOut => {
+export const compactRunSvg = (
+  width: number,
+  events: readonly CockpitEvent[],
+  agents: readonly CockpitAgent[],
+  now: number,
+  appOf: (ev: CockpitEvent) => Badge | undefined = () => undefined,
+): SvgOut => {
   const pad = 12
   let body = ''
   // Summary: counts by kind, each with its tiny tile.
@@ -68,17 +78,23 @@ export const compactRunSvg = (width: number, events: readonly CockpitEvent[], ag
     body += `<g class="row"><title>${esc(tip)}</title><rect x="4" y="${y}" width="${width - 8}" height="${h}" rx="7" class="hov"/>`
     body += statusMark(ev.status, pad + 6, y + 11, 5.5)
     const isShell = ev.cat === 'shell' && ev.detail !== undefined
-    const main = isShell ? (ev.detail ?? '').replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ') : ev.title
+    const main = isShell ? (ev.detail ?? '').replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ') : bare(ev.title, appOf(ev))
     let tx = pad + 20
     if (ev.agentId !== undefined) {
       const hue = agentColor(ev.agentId)
       body += `<circle cx="${tx + 3}" cy="${y + 11}" r="3" fill="${hue}"/>`
       tx += 11
     }
+    const app = appOf(ev)
+    if (app !== undefined) {
+      const badge = appPill(app, tx, y + 3, 9.5)
+      body += badge.svg
+      tx += badge.width + 6
+    }
     const dur = took(ev, now)
     const avail = width - tx - pad - measure(dur, 10.5) - 10
     if (isShell && ev.title !== '' && !main.startsWith(ev.title)) {
-      const t = fitText(ev.title, avail * 0.45, 12)
+      const t = fitText(bare(ev.title, appOf(ev)), avail * 0.45, 12)
       body += text(tx, y + 15, t, 't1', 12, { weight: 540 })
       const tw = measure(t, 12) + 8
       body += text(tx + tw, y + 15, fitText(main, avail - tw, 11, true), 't3 mono', 11)
@@ -179,18 +195,27 @@ export const fileHeadSvg = (
   cwd: string,
   now: number,
   isNew: boolean,
+  app?: Badge,
+  /** A binary asset: its size instead of the line counts, and no diff. */
+  asset?: { size?: number },
 ): SvgOut => {
   const pad = 14
   const path = ev.filePath ?? ev.title
   const name = basename(path)
   const dir = dirname(path)
   const where = dir === '' || dir === cwd ? './' : `${shortPath(dir, cwd, 80)}/`
-  let body = iconTile('edit', pad, 12, 28)
-  const word = ev.status === 'running' ? 'Editing' : isNew ? 'New file' : ev.status === 'ok' ? 'Edited' : 'Edit failed'
-  const color = ev.status === 'error' || ev.status === 'denied' ? '#dc2626' : '#16a34a'
+  let body = app !== undefined ? appTile(app, pad, 12, 28) : iconTile('edit', pad, 12, 28)
+  const word =
+    ev.status === 'running' ? 'Editing' : asset !== undefined ? 'Asset changed' : isNew ? 'New file' : ev.status === 'ok' ? 'Edited' : 'Edit failed'
+  const color = ev.status === 'error' || ev.status === 'denied' ? '#dc2626' : asset !== undefined ? '#7c3aed' : '#16a34a'
   const tag = pill(pad + 40, 10, word, color, { size: 10.5, dot: ev.status === 'running', pulse: ev.status === 'running' })
   body += tag.svg
   let x = pad + 40 + tag.width + 8
+  if (app !== undefined) {
+    const badge = appPill(app, x, 10)
+    body += badge.svg
+    x += badge.width + 8
+  }
   if (ev.agentId !== undefined) {
     const hue = agentColor(ev.agentId)
     const n = fitText(agentName(agents, ev.agentId), 140, 10.5)
@@ -202,12 +227,16 @@ export const fileHeadSvg = (
   body += text(width - pad, 24.5, right, 't3 num', 11, { anchor: 'end' })
   const plus = `+${ev.added ?? 0}`
   const minus = `−${ev.removed ?? 0}`
-  const deltaW = measure(`${plus} ${minus}`, 11.5) + 6
+  const size = asset !== undefined ? (asset.size !== undefined ? fmtBytes(asset.size) : 'binary') : ''
+  const deltaW = asset !== undefined ? measure(size, 11.5) + 6 : measure(`${plus} ${minus}`, 11.5) + 6
   const nameT = fitText(name, width - pad - 40 - deltaW - 14 - pad, 14)
   body += text(pad + 40, 47, nameT, 't1', 14, { weight: 640 })
   const dx = pad + 40 + measure(nameT, 14) + 10
-  body += text(dx, 47, plus, 'add num', 11.5, { weight: 650 })
-  body += text(dx + measure(`${plus} `, 11.5), 47, minus, 'del num', 11.5, { weight: 650 })
+  if (asset !== undefined) body += text(dx, 47, size, 't3 num', 11.5, { weight: 650 })
+  else {
+    body += text(dx, 47, plus, 'add num', 11.5, { weight: 650 })
+    body += text(dx + measure(`${plus} `, 11.5), 47, minus, 'del num', 11.5, { weight: 650 })
+  }
   body += text(pad + 40, 63, fitText(where, width - pad * 2 - 40, 11, true), 't3 mono', 11)
   return svgDoc(width, 72, `<g><title>${esc(path)}</title>${body}</g>`)
 }
@@ -229,7 +258,7 @@ const wrapMono = (value: string, px: number, size: number, lines: number): strin
  * A command as a terminal window over the shoulder: the prompt and command,
  * a blinking cursor while it runs, then the end of its output.
  */
-export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly CockpitAgent[], now: number): SvgOut => {
+export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly CockpitAgent[], now: number, app?: Badge): SvgOut => {
   const pad = 14
   const isLive = ev.status === 'running'
   const isFailed = ev.status === 'error' || ev.status === 'denied'
@@ -246,8 +275,13 @@ export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly Co
     body += text(tx + 10, 18.5, n, '', 10.5, { weight: 600, fill: ah })
     tx += measure(n, 10.5) + 20
   }
+  if (app !== undefined) {
+    const badge = appPill(app, tx, 5.5, 10)
+    body += badge.svg
+    tx += badge.width + 8
+  }
   const dur = `${took(ev, now)}${ev.exitCode !== undefined && ev.exitCode !== 0 ? ` · exit ${ev.exitCode}` : ''}`
-  body += text(tx, 18.5, fitText(ev.title, width - tx - measure(dur, 10.5) - 26, 11.5), '', 11.5, { weight: 600, fill: '#e7e5e4' })
+  body += text(tx, 18.5, fitText(bare(ev.title, app), width - tx - measure(dur, 10.5) - 26, 11.5), '', 11.5, { weight: 600, fill: '#e7e5e4' })
   body += text(width - pad, 18.5, dur, 'num', 10.5, { anchor: 'end', fill: isFailed ? '#f87171' : '#a8a29e' })
   let y = 44
   const command = (ev.detail ?? ev.title).replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ')
@@ -275,17 +309,22 @@ export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly Co
 }
 
 /** Any other call drawn large: its kind and state, its target, its result. */
-export const nowCallSvg = (width: number, ev: CockpitEvent, agents: readonly CockpitAgent[], now: number): SvgOut => {
-  if (ev.cat === 'shell') return terminalSvg(width, ev, agents, now)
+export const nowCallSvg = (width: number, ev: CockpitEvent, agents: readonly CockpitAgent[], now: number, app?: Badge): SvgOut => {
+  if (ev.cat === 'shell') return terminalSvg(width, ev, agents, now, app)
   const pad = 14
   const isLive = ev.status === 'running'
   const isFailed = ev.status === 'error' || ev.status === 'denied'
-  let body = iconTile(ev.cat, pad, 14, 28)
+  let body = app !== undefined ? appTile(app, pad, 14, 28) : iconTile(ev.cat, pad, 14, 28)
   const word = isLive ? 'Running' : isFailed ? (ev.status === 'denied' ? 'Denied' : 'Failed') : 'Done'
   const color = isLive ? '#2563eb' : isFailed ? '#dc2626' : '#16a34a'
   const tag = pill(pad + 40, 12, `${CAT_NAME[ev.cat]} · ${word}`, color, { dot: true, pulse: isLive, size: 10.5 })
   body += tag.svg
   let x = pad + 40 + tag.width + 8
+  if (app !== undefined) {
+    const badge = appPill(app, x, 12)
+    body += badge.svg
+    x += badge.width + 8
+  }
   if (ev.agentId !== undefined) {
     const ah = agentColor(ev.agentId)
     const n = fitText(agentName(agents, ev.agentId), 150, 10.5)
@@ -294,7 +333,7 @@ export const nowCallSvg = (width: number, ev: CockpitEvent, agents: readonly Coc
     x += measure(n, 10.5) + 18
   }
   body += text(width - pad, 26.5, took(ev, now), `${isFailed ? 'err' : 't3'} num`, 11, { anchor: 'end' })
-  body += text(pad + 40, 52, fitText(ev.title, width - pad - 54, 14), 't1', 14, { weight: 640 })
+  body += text(pad + 40, 52, fitText(bare(ev.title, app), width - pad - 54, 14), 't1', 14, { weight: 640 })
   let y = 62
   const inner = width - pad * 2
   if (ev.detail !== undefined && ev.detail !== '' && ev.detail !== ev.title) {

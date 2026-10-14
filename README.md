@@ -10,7 +10,8 @@ Le cockpit se contente d’observer. Il ne bloque jamais un appel d’outil et n
 
 ## Ouvrir
 
-- **Bouton du pied de page** : sous le champ de saisie, à côté des modes, un petit bouton résume la session (`◆ 198 · 2 agents`). Un clic ouvre le panneau, un autre le ferme.
+- **Bouton au-dessus du champ de saisie** : quand le panneau est fermé, un bouton `◆ Open Cockpit · 198` le rouvre d’un clic.
+- **Résumé sous le champ de saisie** : `◆ 198 · 2 agents` (appels d’outils, agents actifs). Dans le terminal, c’est aussi un bouton qui ouvre ou ferme le panneau.
 - **App de bureau** : le panneau s’ouvre tout seul en barre latérale, une fois par session. Pour couper ça, désactive l’option `autoOpen` du plugin.
 - **Commande** : `/cockpit` ouvre le panneau, `/cockpit close` le ferme, `/cockpit live [on|off]` règle la capture d’écran en continu.
 

@@ -515,15 +515,14 @@ const scheduleShot = ($: $T, e: ToolCallInput, r: ToolCallResult): void => {
 }
 
 // ================================================================ status, milestones, ticker
-/**
- * The summary now lives in the footer chip (SessionMode), which redraws from
- * the state it reads; the engine's status line, which would print the
- * plugin's name before it, is cleared once.
- */
+/** The short summary pinned under the prompt (the app prints the plugin's name before it). */
 const refreshStatus = async ($: $T): Promise<void> => {
-  if (lastStatus === 'cleared') return
-  lastStatus = 'cleared'
-  $.ui.status(undefined)
+  const stats = await read($, statsAtom)
+  const agents = await read($, agentsAtom)
+  const text = footerChip(stats, agents)
+  if (text === lastStatus) return
+  lastStatus = text
+  $.ui.status(text)
 }
 
 /** Opens the pane, or closes it when it is up: what the footer chip does. */
@@ -921,9 +920,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await quiet(async () => {
-      // A status line left by an older copy of the module: gone at once.
-      $.ui.status(undefined)
-      lastStatus = 'cleared'
+      // The summary shows from the load on, not from the next tool call.
+      lastStatus = ''
+      await refreshStatus($)
       // A reload finds the pane as the engine kept it.
       const isUp = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
       await update($, uiAtom, u => ({ ...u, isPaneShown: isUp }))
@@ -1139,13 +1138,13 @@ export const register: Register = (on, options) => {
     return r
   }).catch(($, e, next) => next(e))
 
-  // The summary beside the mode labels under the prompt: the terminal draws
-  // it as a button that toggles the pane; other surfaces take it as a label.
+  // On the terminal, a button beside the mode labels toggles the pane (the
+  // desktop asks for this site but does not draw what a plugin puts there).
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    if (e.surface !== 'terminal') return next(e)
     const stats = await read($, statsAtom)
     const agents = await read($, agentsAtom)
     const chip = footerChip(stats, agents)
-    if (e.surface !== 'terminal') return next({ ...e, props: { ...e.props, modes: [...e.props.modes, chip] } })
     const { Box, Button, Text } = $.ui.resolve(e)
     const modes = e.props.modes
     return (

@@ -8,7 +8,8 @@ Cockpit only watches. It never blocks or changes a tool call. If something break
 
 ## Opening it
 
-- **Footer button**: under the prompt, beside the modes, a small button sums up the session (`◆ 198 · 2 agents`). One click opens the pane, another closes it.
+- **Button above the prompt**: while the pane is closed, a `◆ Open Cockpit · 198` button reopens it in one click.
+- **Summary under the prompt**: `◆ 198 · 2 agents` (tool calls, running agents). In the terminal it is also a button that opens or closes the pane.
 - **Desktop app**: the pane opens by itself as a sidebar, once per session. To turn that off, disable the plugin's `autoOpen` option.
 - **Command**: `/cockpit` opens the pane, `/cockpit close` closes it, `/cockpit live [on|off]` sets continuous screen capture.
 

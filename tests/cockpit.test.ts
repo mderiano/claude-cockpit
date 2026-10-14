@@ -148,8 +148,8 @@ describe('cockpit', () => {
     const stats = { value: await peek($, 'stats') }
     expect(stats.value).toMatchObject({ calls: 1, commands: 1, running: 0, errors: 0, streak: 1 })
     expect(stats.value?.milestones).toContain('tests-green')
-    // The short summary under the prompt.
-    expect(statuses.some(s => s?.includes('◆ 1') === true)).toBe(true)
+    // No status line: the engine would print the plugin's name before it.
+    expect(statuses.every(s => s === undefined)).toBe(true)
     for (const surface of ALL_SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', viewport: { columns: 100, rows: 40, isFullscreen: true }, props: paneProps() })
       if (surface === 'terminal') {
@@ -1175,10 +1175,10 @@ describe('cockpit footer chip', () => {
     expect(closed).toContain('cockpit')
     await ui.unmount()
     pane.isUp = false
-    // Desktop: the modes are left as the engine has them ...
-    const label = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: ['focus'] } })
+    // Desktop: the chip is a mode label (no button there) ...
+    const label = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
     expect(await label.find({ key: 'cockpit-toggle' })).toBeUndefined()
-    expect(await label.find({ text: /◆/ })).toBeUndefined()
+    expect(await label.find({ text: /◆ 1/ })).toBeDefined()
     await label.unmount()
     // ... and above the prompt, while the pane is closed, one opener.
     const band = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 }, view: {} }

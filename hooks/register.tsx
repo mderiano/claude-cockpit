@@ -33,7 +33,7 @@ import {
   num,
   obj,
   outputOf,
-  statusLine,
+  footerChip,
   str,
   tokensOf,
   touchesDevice,
@@ -515,14 +515,26 @@ const scheduleShot = ($: $T, e: ToolCallInput, r: ToolCallResult): void => {
 }
 
 // ================================================================ status, milestones, ticker
+/**
+ * The summary now lives in the footer chip (SessionMode), which redraws from
+ * the state it reads; the engine's status line, which would print the
+ * plugin's name before it, is cleared once.
+ */
 const refreshStatus = async ($: $T): Promise<void> => {
-  const stats = await read($, statsAtom)
-  const files = await read($, filesAtom)
-  const agents = await read($, agentsAtom)
-  const text = statusLine(stats, files.length, agents)
-  if (text === lastStatus) return
-  lastStatus = text
-  $.ui.status(text)
+  if (lastStatus === 'cleared') return
+  lastStatus = 'cleared'
+  $.ui.status(undefined)
+}
+
+/** Opens the pane, or closes it when it is up: what the footer chip does. */
+const togglePane = async ($: $T): Promise<void> => {
+  const panes = await $.ui.panes()
+  if (panes.some(p => p.id === PANE && p.isShown)) {
+    await $.ui.close({ id: PANE })
+    return
+  }
+  ensureTicker($)
+  await $.ui.open({ id: PANE, title: 'Cockpit' })
 }
 
 const celebrate = async ($: $T, key: string, text: string): Promise<void> => {
@@ -1107,6 +1119,23 @@ export const register: Register = (on, options) => {
     if (tab === 'screen') $.clock.after(0, () => void captureDevice($))
     return {}
   })
+
+  // The footer chip, beside the mode labels under the prompt: a glance at
+  // the session and one click to open or close the pane.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const stats = await read($, statsAtom)
+    const agents = await read($, agentsAtom)
+    const modes = e.props.modes
+    return (
+      <Box key="modes" flexDirection="row" columnGap={1}>
+        {modes.length > 0 ? <Text key="m" dimColor>{modes.join(' & ')}</Text> : null}
+        <Button key="cockpit-toggle" plain onPress={() => void togglePane($).catch(() => undefined)}>
+          {footerChip(stats, agents)}
+        </Button>
+      </Box>
+    )
+  }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: 'cockpit' }, async ($, e) => {
     const els = $.ui.resolve(e)

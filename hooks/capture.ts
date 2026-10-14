@@ -262,6 +262,16 @@ export const agentAnswer = (result: Record<string, unknown>): string => {
   return clean(content.map(c => str(obj(c).text) ?? '').join('\n'))
 }
 
+/**
+ * The footer chip that opens the pane: the call count, and the agents at
+ * work when there are some. Short on purpose: it sits beside the modes.
+ */
+export const footerChip = (stats: CockpitStats, agents: readonly CockpitAgent[]): string => {
+  if (stats.calls === 0) return '◆ Cockpit'
+  const running = agents.filter(a => a.status === 'running').length
+  return `◆ ${fmtCount(stats.calls)}${running > 0 ? ` · ${plural(running, 'agent')}` : ''}`
+}
+
 /** The one line under the prompt. */
 export const statusLine = (stats: CockpitStats, files: number, agents: readonly CockpitAgent[]): string => {
   const running = agents.filter(a => a.status === 'running').length

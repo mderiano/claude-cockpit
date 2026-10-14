@@ -100,8 +100,13 @@ const engine = (on: On) => {
     opened.push(e.id)
     return { value: { isPlaced: true as const } }
   })
-  on('ui.close', () => ({ value: undefined }))
-  on('ui.panes', () => ({ value: [] }))
+  const closed: string[] = []
+  const pane = { isUp: false }
+  on('ui.close', ($, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({ value: pane.isUp ? [{ id: 'cockpit', title: 'Cockpit', isShown: true, isFocused: false, isPlaced: true }] : [] }))
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -121,7 +126,7 @@ const engine = (on: On) => {
       isStderrTruncated: false,
     },
   }))
-  return { toasts, statuses, clock, opened }
+  return { toasts, statuses, clock, opened, closed, pane }
 }
 
 describe('cockpit', () => {
@@ -143,7 +148,8 @@ describe('cockpit', () => {
     const stats = { value: await peek($, 'stats') }
     expect(stats.value).toMatchObject({ calls: 1, commands: 1, running: 0, errors: 0, streak: 1 })
     expect(stats.value?.milestones).toContain('tests-green')
-    expect(statuses.some(s => s?.includes('1 call') === true)).toBe(true)
+    // No status line: the engine would print the plugin's name before it.
+    expect(statuses.every(s => s === undefined)).toBe(true)
     for (const surface of ALL_SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', viewport: { columns: 100, rows: 40, isFullscreen: true }, props: paneProps() })
       if (surface === 'terminal') {
@@ -1136,5 +1142,32 @@ describe('cockpit screen follow-up', () => {
     expect((await peek($, 'feed'))?.map(f => f.id)).toEqual(['nav-1', 'b-during'])
     expect(await peek($, 'stats')).toMatchObject({ calls: 2, running: 0 })
     expect((await peek($, 'screen'))?.b64).toBe(PNG)
+  })
+})
+
+describe('cockpit footer chip', () => {
+  test('the chip beside the modes sums up the session and toggles the pane', WITH_SPY, async ($, on) => {
+    const { opened, clock, closed, pane } = engine(on)
+    on('tool.call', () => ({ result: { stdout: 'ok', stderr: '', interrupted: false }, text: 'ok' }))
+    await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'SessionMode', props: { modes: ['focus'] } })
+      expect((await ui.find({ key: 'cockpit-toggle' }))?.text).toContain('Cockpit')
+      expect(await ui.find({ text: /focus/ })).toBeDefined()
+      await ui.unmount()
+    }
+    await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List', tool_use_id: 'c1' })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    const chip = await ui.find({ key: 'cockpit-toggle' })
+    expect(chip?.text).toContain('◆ 1')
+    expect(chip?.text).not.toContain('Cockpit')
+    const before = opened.length
+    await ui.press({ key: 'cockpit-toggle' })
+    expect(opened.length).toBe(before + 1)
+    pane.isUp = true
+    await ui.press({ key: 'cockpit-toggle' })
+    expect(closed).toContain('cockpit')
+    await ui.unmount()
   })
 })

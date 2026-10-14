@@ -8,34 +8,36 @@ Cockpit only watches. It never blocks or changes a tool call. If something break
 
 ## Opening it
 
-- **Desktop app (Code tab)**: the pane opens by itself as a sidebar, once per session, as soon as the app connects. To turn that off, disable the plugin's `autoOpen` option.
-- **Anywhere**: the `/cockpit [tab]` command opens the pane, or focuses it if it is already open.
-  - `/cockpit feed`, `files`, `agents` or `screen` opens the pane on that tab.
-  - `/cockpit live` turns live screen capture on or off; `/cockpit live on` or `live off` sets it. It stops by itself after 3 failed captures in a row.
-  - `/cockpit close` closes the pane.
+- **Footer button**: under the prompt, beside the modes, a small button sums up the session (`◆ 198 · 2 agents`). One click opens the pane, another closes it.
+- **Desktop app**: the pane opens by itself as a sidebar, once per session. To turn that off, disable the plugin's `autoOpen` option.
+- **Command**: `/cockpit` opens the pane, `/cockpit close` closes it, `/cockpit live [on|off]` sets continuous screen capture.
 
-## Header
+## What you see (desktop app)
 
-A row of chips sums up the session: tool calls, commands, files touched, `+`/`−` lines, running and finished agents, errors, a streak of successful calls, and the session's duration. A small sparkline shows the last 6 minutes of activity. A few milestones raise a toast: first file changed, tests passing, 100 calls, 10 agents… A one-line summary also shows below the prompt.
+One view, no tabs, as if you were looking over Claude's shoulder.
 
-## Tabs (keys 1 to 4)
+- **Header**: tool calls, commands, files changed (`+`/`−`), running agents, errors, session time, and a curve of the last 6 minutes of activity.
+- **NOW**, what Claude is doing right now, drawn large:
+  - a **command** in a terminal window: the command, a cursor while it runs, then the end of its output;
+  - a **file change** with its colored diff (a subagent's too);
+  - an **agent** or a **workflow** started: its state, what it is doing this moment, a progress bar with one segment per agent;
+  - the **screen** of the browser or the simulator, refreshed after each action.
+  
+  When nothing runs, the last action stays in view.
+- **HISTORY**, below: files and agents keep their card; commands, reads and searches fold into compact runs. Hover a line to see its output.
 
-| Key | Tab | What it shows |
-|---|---|---|
-| `1` | **Feed** | Every tool call, newest first. Each has a colored chip for its category (shell, edit, read, search, web, agent, screen, MCP), a status (◐ running, ✓ ok, ✗ error, ⛔ denied) and its duration. Click a row to see the full input, the output and the diff. A filter picks everything, the main session, or a single agent. |
-| `2` | **Files** | The files changed, with `+`/`−` counts and each file's history as colored unified diffs. |
-| `3` | **Agents** | The main session, then the tree of subagents and teammates. Workflow (ultracode) runs get a progress bar. What is running is listed first. A finished run folds into one line that expands with a click. Click an agent to see its own mini-feed and its answer. |
-| `4` | **Screen** | The latest frame from a simulator, an emulator or a tool. `l` turns Live mode on or off (one capture every 2 s), `s` takes one capture. |
+In the terminal, the pane keeps a tabbed view (Feed, Files, Agents, Screen; keys 1 to 4).
 
 ## Screen sources
 
 | Source | What it needs |
 |---|---|
-| iOS Simulator | Xcode and its command-line tools (`xcrun simctl`), and a booted simulator. Frames are shrunk with `sips`, which ships with macOS. |
-| Android emulator | `adb` on the `PATH`, in `~/Library/Android/sdk/platform-tools` or in `$ANDROID_HOME/platform-tools`, and a connected device (`adb devices`). |
-| Tool screenshots | Nothing to install. Screenshots Claude takes with the browser tools (Claude Browser, Claude in Chrome), the iOS Simulator tool or computer use show up by themselves. |
+| Built-in browser (Claude Browser) | Nothing. After each action, Cockpit takes a screenshot, when the app allows it without asking you. |
+| Claude in Chrome | Nothing. A screenshot follows an action that names its tab. |
+| iOS Simulator | Xcode (`xcrun simctl`) and a booted simulator. A screenshot follows each simulator action. Frames are shrunk with `sips`, which ships with macOS. |
+| Android emulator | `adb` on the `PATH`, in `~/Library/Android/sdk/platform-tools` or in `$ANDROID_HOME/platform-tools`, and a connected device. |
 
-Capture only runs while the Screen tab is visible and Live mode is on, or when you press Capture. In the desktop app the frame is drawn as an SVG holding a compressed JPEG. In the terminal it uses the kitty graphics protocol (kitty, Ghostty); elsewhere a text stands in for it.
+The "Live screen" button captures the simulator or emulator every 2 s; "Capture screen" takes one frame. In the desktop app the frame is drawn as an SVG; in the terminal through the kitty graphics protocol (kitty, Ghostty).
 
 ## Installation
 

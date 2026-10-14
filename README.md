@@ -10,34 +10,36 @@ Le cockpit se contente d’observer. Il ne bloque jamais un appel d’outil et n
 
 ## Ouvrir
 
-- **App de bureau (onglet Code)** : le panneau s’ouvre tout seul en barre latérale, une fois par session, dès que l’app se connecte. Pour couper ça, désactive l’option `autoOpen` dans la configuration du plugin.
-- **Partout** : la commande `/cockpit [onglet]` ouvre le panneau, ou lui donne le focus s’il est déjà ouvert.
-  - `/cockpit feed`, `files`, `agents` ou `screen` ouvre le panneau sur l’onglet choisi.
-  - `/cockpit live` active ou coupe la capture en direct de l’écran ; `/cockpit live on` ou `live off` la règle. Elle s’arrête d’elle-même après 3 captures ratées de suite.
-  - `/cockpit close` ferme le panneau.
+- **Bouton du pied de page** : sous le champ de saisie, à côté des modes, un petit bouton résume la session (`◆ 198 · 2 agents`). Un clic ouvre le panneau, un autre le ferme.
+- **App de bureau** : le panneau s’ouvre tout seul en barre latérale, une fois par session. Pour couper ça, désactive l’option `autoOpen` du plugin.
+- **Commande** : `/cockpit` ouvre le panneau, `/cockpit close` le ferme, `/cockpit live [on|off]` règle la capture d’écran en continu.
 
-## En-tête
+## Ce que tu vois (app de bureau)
 
-Une rangée de pastilles résume la session : appels d’outils, commandes, fichiers touchés, lignes `+`/`−`, agents actifs ou finis, erreurs, combo d’appels réussis et durée de la session. Une petite courbe montre l’activité des 6 dernières minutes. Quelques jalons déclenchent un toast : premier fichier modifié, tests au vert, 100 appels, 10 agents… Un résumé d’une ligne s’affiche aussi sous la saisie.
+Une seule vue, sans onglets, comme si tu regardais par-dessus l’épaule de Claude.
 
-## Onglets (raccourcis 1 à 4)
+- **En-tête** : appels d’outils, commandes, fichiers modifiés (`+`/`−`), agents actifs, erreurs, durée de la session, et une courbe de l’activité des 6 dernières minutes.
+- **NOW**, ce que Claude fait en ce moment, en grand :
+  - une **commande** dans une fenêtre de terminal : la commande, un curseur pendant qu’elle tourne, puis la fin de sa sortie ;
+  - un **fichier modifié** avec son diff coloré (y compris par un sous-agent) ;
+  - un **agent** ou un **workflow** lancé : son état, ce qu’il fait à l’instant, une barre de progression par agent ;
+  - l’**écran** du navigateur ou du simulateur, mis à jour après chaque action.
+  
+  Quand rien ne tourne, la dernière action reste affichée.
+- **HISTORY**, en dessous : les fichiers et les agents gardent leur carte ; les commandes, lectures et recherches sont regroupées en blocs compacts. Survole une ligne pour voir sa sortie.
 
-| Touche | Onglet | Contenu |
-|---|---|---|
-| `1` | **Feed** | Tous les appels d’outils, du plus récent au plus ancien. Chacun a une pastille de couleur par catégorie (shell, édition, lecture, recherche, web, agent, écran, MCP), un statut (◐ en cours, ✓ ok, ✗ erreur, ⛔ refusé) et sa durée. Clique une ligne pour voir l’entrée complète, la sortie et le diff. Un filtre permet de choisir Tout, la session principale ou un agent précis. |
-| `2` | **Files** | Les fichiers modifiés, avec les compteurs `+`/`−` et l’historique de chaque fichier en diff unifié coloré. |
-| `3` | **Agents** | La session principale, puis l’arbre des sous-agents et des coéquipiers. Les runs de workflow (ultracode) ont une barre de progression. Ce qui tourne est affiché en premier. Un run terminé tient sur une ligne qu’on déplie d’un clic. Clique un agent pour voir son mini-feed et sa réponse. |
-| `4` | **Screen** | La dernière image d’un simulateur, d’un émulateur ou d’un outil. `l` active ou coupe le mode Live (une capture toutes les 2 s), `s` prend une capture. |
+Dans le terminal, le panneau garde une vue à onglets (Feed, Files, Agents, Screen ; touches 1 à 4).
 
-## Sources de l’onglet Screen
+## Sources de l’écran
 
 | Source | Ce qu’il faut |
 |---|---|
-| Simulateur iOS | Xcode avec ses outils en ligne de commande (`xcrun simctl`) et un simulateur démarré. Les images sont réduites avec `sips`, fourni avec macOS. |
-| Émulateur Android | `adb` dans le `PATH`, dans `~/Library/Android/sdk/platform-tools` ou dans `$ANDROID_HOME/platform-tools`, et un appareil connecté (`adb devices`). |
-| Captures d’outils | Rien à installer. Les captures prises par Claude avec les outils navigateur (Claude Browser, Claude in Chrome), simulateur iOS ou computer-use s’affichent automatiquement. |
+| Navigateur intégré (Claude Browser) | Rien. Après chaque action, le cockpit prend une capture, si l’app l’autorise sans te demander. |
+| Claude in Chrome | Rien. Capture après une action qui précise l’onglet. |
+| Simulateur iOS | Xcode (`xcrun simctl`) et un simulateur démarré. Capture après chaque action sur le simulateur. Les images sont réduites avec `sips`, fourni avec macOS. |
+| Émulateur Android | `adb` dans le `PATH`, dans `~/Library/Android/sdk/platform-tools` ou dans `$ANDROID_HOME/platform-tools`, et un appareil connecté. |
 
-La capture ne tourne que si l’onglet Screen est visible et que le mode Live est actif, ou quand tu appuies sur « Capture ». Dans l’app de bureau, l’image passe par un SVG compressé en JPEG. Dans le terminal, elle passe par le protocole d’images kitty (kitty, Ghostty) ; ailleurs, un texte la remplace.
+Le bouton « Live screen » capture l’écran du simulateur ou de l’émulateur toutes les 2 s ; « Capture screen » en prend une seule. Dans l’app de bureau, l’image passe par un SVG ; dans le terminal, par le protocole d’images kitty (kitty, Ghostty).
 
 ## Installation
 

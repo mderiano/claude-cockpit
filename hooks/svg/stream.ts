@@ -1,9 +1,11 @@
-// Cockpit's live stream, the drawn parts: compact runs of small calls, agent
-// and workflow cards, and the head of a file change (its diff is the
-// engine's own Code, drawn under it).
+// Cockpit's live stream, the drawn parts: the summary line of a run of small
+// calls (its rows are native, so they can be clicked), agent and workflow
+// cards, a command's terminal, and the head of a file change (its diff is the
+// engine's own Code, drawn under it). Images only: nothing here hovers, and
+// nothing changes from one second to the next but a running call's time.
 import type { CockpitAgent, CockpitCategory, CockpitEvent, CockpitWorkflow } from '../../types'
-import { basename, dirname, fmtAgo, fmtBytes, fmtCount, fmtDur, shortPath } from '../model'
-import { agentColor, appPill, appTile, CAT_NAME, esc, fitText, HUE, iconTile, measure, pill, statusMark, svgDoc, text } from './base'
+import { basename, dirname, fmtAgoCoarse, fmtBytes, fmtDur, shortPath } from '../model'
+import { agentColor, appPill, appTile, CAT_NAME, fitText, HUE, iconTile, measure, pill, statusMark, svgDoc, text } from './base'
 import type { Badge, SvgOut } from './base'
 import { agentName } from './feed'
 
@@ -14,10 +16,8 @@ const took = (ev: CockpitEvent, now: number): string =>
 const bare = (title: string, app: Badge | undefined): string =>
   app !== undefined && title.startsWith(`${app.name} · `) ? title.slice(app.name.length + 3) : title
 
-const ago = (at: number, now: number): string => {
-  const a = fmtAgo(at, now)
-  return a === '' ? '' : a === 'now' ? 'now' : `${a} ago`
-}
+/** An age that changes once a minute at most: the drawing stays the same picture. */
+const ago = (at: number, now: number): string => fmtAgoCoarse(at, now)
 
 const NOUN: Partial<Record<CockpitCategory, [string, string]>> = {
   shell: ['command', 'commands'],
@@ -32,83 +32,35 @@ const NOUN: Partial<Record<CockpitCategory, [string, string]>> = {
   edit: ['edit', 'edits'],
 }
 
-/** How many rows of a run of small calls stay visible. */
+/** How many rows of a run of small calls show before « + N more ». */
 export const COMPACT_ROWS = 3
 
 /**
- * A run of small calls (commands, reads, searches): one summary line, then
- * the newest few as single lines. Everything else stays in the tooltip.
+ * The summary line of a run of small calls (commands, reads, searches): the
+ * count of each kind with its tile, what failed, how long ago. The rows
+ * themselves are native, under it.
  */
-export const compactRunSvg = (
-  width: number,
-  events: readonly CockpitEvent[],
-  agents: readonly CockpitAgent[],
-  now: number,
-  appOf: (ev: CockpitEvent) => Badge | undefined = () => undefined,
-): SvgOut => {
+export const runSummarySvg = (width: number, events: readonly CockpitEvent[], now: number): SvgOut => {
   const pad = 12
   let body = ''
-  // Summary: counts by kind, each with its tiny tile.
   const counts = new Map<CockpitCategory, number>()
   for (const ev of events) counts.set(ev.cat, (counts.get(ev.cat) ?? 0) + 1)
-  let x = pad
   const failed = events.filter(ev => ev.status === 'error' || ev.status === 'denied').length
+  const last = events[0]
+  const right = failed > 0 ? `${failed} failed` : last !== undefined ? ago(last.startedAt, now) : ''
+  const rightW = measure(right, 11) + 12
+  let x = pad
   for (const [cat, n] of counts) {
     const [one, many] = NOUN[cat] ?? ['call', 'calls']
     const label = `${n} ${n === 1 ? one : many}`
     const w = 18 + measure(label, 11.5) + 14
-    if (x + w > width - pad - 60) break
+    if (x + w > width - pad - rightW) break
     body += iconTile(cat, x, 6, 16)
     body += text(x + 21, 18.5, label, 't2', 11.5, { weight: 560 })
     x += w
   }
-  const last = events[0]
-  const right = failed > 0 ? `${failed} failed` : last !== undefined ? ago(last.startedAt, now) : ''
   body += text(width - pad, 18.5, right, failed > 0 ? 'err' : 't3 num', 11, { anchor: 'end', weight: failed > 0 ? 600 : 400 })
-  let y = 30
-  // The newest few, one line each; a failed one shows its first error line.
-  const shown = events.slice(0, COMPACT_ROWS)
-  for (const ev of shown) {
-    const errLine =
-      (ev.status === 'error' || ev.status === 'denied') && ev.output !== undefined
-        ? (ev.output.split('\n').find(l => l.trim() !== '') ?? '').trim()
-        : ''
-    const h = errLine !== '' ? 38 : 22
-    const tip = `${CAT_NAME[ev.cat]} · ${ev.tool} · ${took(ev, now)}${ev.agentId !== undefined ? `\n${agentName(agents, ev.agentId)}` : ''}${ev.detail !== undefined ? `\n\n${ev.detail.replace(/ ⏎ /g, '\n').slice(0, 600)}` : ''}${ev.output !== undefined && ev.output.trim() !== '' ? `\n\n${ev.output.trimEnd().split('\n').slice(-10).join('\n').slice(-800)}` : ''}`
-    body += `<g class="row"><title>${esc(tip)}</title><rect x="4" y="${y}" width="${width - 8}" height="${h}" rx="7" class="hov"/>`
-    body += statusMark(ev.status, pad + 6, y + 11, 5.5)
-    const isShell = ev.cat === 'shell' && ev.detail !== undefined
-    const main = isShell ? (ev.detail ?? '').replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ') : bare(ev.title, appOf(ev))
-    let tx = pad + 20
-    if (ev.agentId !== undefined) {
-      const hue = agentColor(ev.agentId)
-      body += `<circle cx="${tx + 3}" cy="${y + 11}" r="3" fill="${hue}"/>`
-      tx += 11
-    }
-    const app = appOf(ev)
-    if (app !== undefined) {
-      const badge = appPill(app, tx, y + 3, 9.5)
-      body += badge.svg
-      tx += badge.width + 6
-    }
-    const dur = took(ev, now)
-    const avail = width - tx - pad - measure(dur, 10.5) - 10
-    if (isShell && ev.title !== '' && !main.startsWith(ev.title)) {
-      const t = fitText(bare(ev.title, appOf(ev)), avail * 0.45, 12)
-      body += text(tx, y + 15, t, 't1', 12, { weight: 540 })
-      const tw = measure(t, 12) + 8
-      body += text(tx + tw, y + 15, fitText(main, avail - tw, 11, true), 't3 mono', 11)
-    } else body += text(tx, y + 15, fitText(main, avail, isShell ? 11 : 12, isShell), isShell ? 't2 mono' : 't1', isShell ? 11 : 12, { weight: isShell ? 400 : 540 })
-    body += text(width - pad, y + 15, dur, 't3 num', 10.5, { anchor: 'end' })
-    if (errLine !== '') body += text(pad + 20, y + 31, fitText(errLine, width - pad * 2 - 20, 10.5, true), 'err mono', 10.5)
-    body += `</g>`
-    y += h
-  }
-  if (events.length > shown.length) {
-    body += text(pad + 20, y + 13, `+ ${events.length - shown.length} more — hover a line for its output`, 't3', 10.5)
-    y += 18
-  }
-  return svgDoc(width, y + 4, body)
+  return svgDoc(width, 28, body)
 }
 
 /** An agent's card: what it was asked, its state and what it does now. */
@@ -133,13 +85,12 @@ export const agentCardSvg = (width: number, a: CockpitAgent | undefined, ev: Coc
   body += text(pad + 40, 50, fitText(title, width - pad - 40 - 14, 13.5), 't1', 13.5, { weight: 620 })
   if (isLive && a?.lastTitle !== undefined)
     body += text(pad + 40, 68, fitText(`${a.lastTool ?? ''} · ${a.lastTitle}`, width - pad - 54, 11, true), 't2 mono', 11)
-  const tip = `${title}${a?.answer !== undefined ? `\n\n${a.answer.slice(0, 700)}` : ''}${a?.tokens !== undefined ? `\n\n${fmtCount(a.tokens)} tokens` : ''}`
   void agents
-  return svgDoc(width, h, `<g><title>${esc(tip)}</title>${body}</g>`)
+  return svgDoc(width, h, body)
 }
 
 /** A workflow run's card: its name, a segment per agent, the live ones listed. */
-export const workflowCardSvg = (width: number, wf: CockpitWorkflow | undefined, ev: CockpitEvent, list: readonly CockpitAgent[], now: number): SvgOut => {
+export const workflowCardSvg = (width: number, wf: CockpitWorkflow | undefined, ev: CockpitEvent | undefined, list: readonly CockpitAgent[], now: number): SvgOut => {
   const pad = 14
   const sorted = [...list].sort((a, b) => (a.workflowIndex ?? 0) - (b.workflowIndex ?? 0))
   const live = sorted.filter(a => a.status === 'running')
@@ -148,12 +99,15 @@ export const workflowCardSvg = (width: number, wf: CockpitWorkflow | undefined, 
   let body = ''
   body += `<g transform="translate(${pad} 14)"><rect width="28" height="28" rx="8" fill="#7c3aed" fill-opacity=".12"/>` +
     `<path d="M7 14h4l2-5 3 10 2-5h3" fill="none" stroke="#7c3aed" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></g>`
-  const isLive = live.length > 0 || ev.status === 'running'
+  const isLive = live.length > 0 || ev?.status === 'running'
   const tag = pill(pad + 40, 12, isLive ? 'Workflow running' : fails > 0 ? 'Workflow finished with errors' : 'Workflow finished', isLive ? '#7c3aed' : fails > 0 ? '#dc2626' : '#16a34a', { dot: true, pulse: isLive, size: 10.5 })
   body += tag.svg
-  const meta = `${done}/${sorted.length} done${fails > 0 ? ` · ${fails} failed` : ''} · ${fmtDur((ev.endedAt ?? now) - ev.startedAt)}`
+  // How long the run took: its agents run on after the call that launched them returned.
+  const start = wf?.startedAt ?? ev?.startedAt ?? now
+  const end = isLive ? now : Math.max(ev?.endedAt ?? start, ...sorted.map(a => a.endedAt ?? start))
+  const meta = `${done}/${sorted.length} done${fails > 0 ? ` · ${fails} failed` : ''} · ${fmtDur(end - start)}`
   body += text(width - pad, 25, meta, 't3 num', 11, { anchor: 'end' })
-  body += text(pad + 40, 50, fitText(wf?.name ?? ev.title, width - pad - 54, 13.5), 't1', 13.5, { weight: 620 })
+  body += text(pad + 40, 50, fitText(wf?.name ?? ev?.title ?? 'Workflow', width - pad - 54, 13.5), 't1', 13.5, { weight: 620 })
   let y = 62
   if (sorted.length > 0) {
     const inner = width - pad * 2
@@ -163,7 +117,7 @@ export const workflowCardSvg = (width: number, wf: CockpitWorkflow | undefined, 
       const fill = a.status === 'done' || a.status === 'idle' ? '#16a34a' : a.status === 'running' ? '#7c3aed' : a.status === 'failed' || a.status === 'killed' ? '#dc2626' : '#a8a29e'
       body += `<rect x="${(pad + i * (seg + gap)).toFixed(1)}" y="${y}" width="${seg.toFixed(1)}" height="6" rx="3" fill="${fill}" fill-opacity="${a.status === 'running' ? '.5' : '.85'}">` +
         (a.status === 'running' ? `<animate attributeName="fill-opacity" values=".3;.85;.3" dur="1.6s" repeatCount="indefinite"/>` : '') +
-        `<title>${esc(`#${a.workflowIndex ?? i + 1} ${a.name ?? a.description} · ${a.status}`)}</title></rect>`
+        `</rect>`
     }
     y += 14
   }
@@ -238,7 +192,7 @@ export const fileHeadSvg = (
     body += text(dx + measure(`${plus} `, 11.5), 47, minus, 'del num', 11.5, { weight: 650 })
   }
   body += text(pad + 40, 63, fitText(where, width - pad * 2 - 40, 11, true), 't3 mono', 11)
-  return svgDoc(width, 72, `<g><title>${esc(path)}</title>${body}</g>`)
+  return svgDoc(width, 72, body)
 }
 
 /** Wraps text into at most `lines` lines of `px` (mono), the last cut. */
@@ -252,6 +206,32 @@ const wrapMono = (value: string, px: number, size: number, lines: number): strin
   }
   if (rest.length > 0 && out.length > 0) out[out.length - 1] = `${out[out.length - 1]!.slice(0, per - 1)}…`
   return out
+}
+
+/** Output lines a terminal card shows, from the end. */
+const TERMINAL_TAIL = 8
+/** Lines of the command a terminal card shows. */
+const TERMINAL_COMMAND_LINES = 4
+
+/** The command as a terminal card writes it: one line, its line breaks as `;`. */
+const commandLine = (ev: CockpitEvent): string => (ev.detail ?? ev.title).replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ')
+
+/**
+ * Whether a terminal card of `width` leaves something out: a command wrapped
+ * past its lines, written on several lines or cut, an output longer or wider
+ * than what it shows.
+ */
+export const terminalHasMore = (width: number, ev: CockpitEvent): boolean => {
+  const inner = width - 28
+  const detail = ev.detail ?? ''
+  const perCommand = Math.max(8, Math.floor((inner - 16) / (11.5 * 0.6)))
+  if (commandLine(ev).length > perCommand * TERMINAL_COMMAND_LINES) return true
+  if (detail.includes(' ⏎ ') || detail.endsWith('…')) return true
+  if (ev.status === 'running' || ev.output === undefined || ev.output.trim() === '') return false
+  const lines = ev.output.trimEnd().split('\n')
+  if (lines.length > TERMINAL_TAIL) return true
+  const perOutput = Math.max(8, Math.floor(inner / (11 * 0.6)))
+  return lines.some(line => line.length > perOutput)
 }
 
 /**
@@ -284,8 +264,7 @@ export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly Co
   body += text(tx, 18.5, fitText(bare(ev.title, app), width - tx - measure(dur, 10.5) - 26, 11.5), '', 11.5, { weight: 600, fill: '#e7e5e4' })
   body += text(width - pad, 18.5, dur, 'num', 10.5, { anchor: 'end', fill: isFailed ? '#f87171' : '#a8a29e' })
   let y = 44
-  const command = (ev.detail ?? ev.title).replace(/^\$ /, '').replace(/ ⏎ /g, ' ; ')
-  const lines = wrapMono(command, inner - 16, 11.5, 4)
+  const lines = wrapMono(commandLine(ev), inner - 16, 11.5, TERMINAL_COMMAND_LINES)
   for (const [i, line] of lines.entries()) {
     if (i === 0) body += text(pad, y + 4, '$', 'mono', 11.5, { weight: 700, fill: '#d97757' })
     body += text(pad + 14, y + 4, line, 'mono', 11.5, { fill: '#f5f5f4' })
@@ -296,7 +275,7 @@ export const terminalSvg = (width: number, ev: CockpitEvent, agents: readonly Co
     y += 14
   } else if (ev.output !== undefined && ev.output.trim() !== '') {
     y += 4
-    for (const line of ev.output.trimEnd().split('\n').slice(-8)) {
+    for (const line of ev.output.trimEnd().split('\n').slice(-TERMINAL_TAIL)) {
       body += text(pad, y + 4, fitText(line, inner, 11, true), 'mono', 11, { fill: isFailed ? '#fca5a5' : '#a8a29e' })
       y += 15
     }
@@ -369,55 +348,19 @@ export const sectionSvg = (width: number, label: string, aside: string, live: bo
 }
 
 /**
- * A subagent at work, live: its card with what it was asked, and its calls
- * as they happen — the running one first, then the latest few.
+ * A subagent at work, live: the head of its card, with what it was asked and
+ * how far it got. Its calls follow as native rows, so each can be unfolded.
  */
-export const agentLiveSvg = (width: number, a: CockpitAgent, current: CockpitEvent | undefined, recent: readonly CockpitEvent[], now: number): SvgOut => {
+export const agentHeadSvg = (width: number, a: CockpitAgent, now: number): SvgOut => {
   const pad = 14
   const hue = agentColor(a.id)
   let body = iconTile('agent', pad, 14, 28)
   const tag = pill(pad + 40, 12, a.workflowIndex !== undefined ? `Agent #${a.workflowIndex} running` : 'Agent running', '#2563eb', { dot: true, pulse: true, size: 10.5 })
   body += tag.svg
-  const meta = [a.type === 'general-purpose' ? '' : a.type, `${a.tools} calls`, fmtDur(now - a.startedAt)].filter(s => s !== '').join(' · ')
+  const meta = [a.type === 'general-purpose' ? '' : a.type, `${a.tools} calls`, fmtDur(now - a.startedAt)].filter(one => one !== '').join(' · ')
   body += text(width - pad, 25, fitText(meta, width - pad * 2 - 48 - tag.width, 11), 't3 num', 11, { anchor: 'end' })
   body += text(pad + 40, 50, fitText(a.name ?? a.description, width - pad - 54, 13.5), 't1', 13.5, { weight: 620 })
-  let y = 62
-  const rows = [...(current !== undefined ? [current] : []), ...recent]
-  if (rows.length === 0) {
-    body += text(pad + 40, y + 12, 'Starting…', 't3', 11.5)
-    y += 22
-  } else {
-    body += `<path d="M${pad} ${y + 0.5}h${width - pad * 2}" class="line" stroke-width="1"/>`
-    y += 6
-    for (const ev of rows) {
-      const isCur = ev === current
-      const h = 24
-      const tip = `${CAT_NAME[ev.cat]} · ${ev.tool} · ${took(ev, now)}${ev.detail !== undefined ? `\n\n${ev.detail.replace(/ ⏎ /g, '\n').slice(0, 600)}` : ''}${ev.output !== undefined && ev.output.trim() !== '' ? `\n\n${ev.output.trimEnd().split('\n').slice(-10).join('\n').slice(-800)}` : ''}`
-      body += `<g class="row"><title>${esc(tip)}</title><rect x="${pad - 6}" y="${y}" width="${width - pad * 2 + 12}" height="${h}" rx="7" class="${isCur ? 'sunk' : 'hov'}"/>`
-      body += statusMark(ev.status, pad + 6, y + 12, 5.5)
-      body += iconTile(ev.cat, pad + 18, y + 4, 16)
-      const dur = took(ev, now)
-      const tx = pad + 40
-      const avail = width - tx - pad - measure(dur, 10.5) - 10
-      const isShell = ev.cat === 'shell' && ev.detail !== undefined
-      if (isShell) {
-        const t = fitText(ev.title, avail * 0.45, 12)
-        body += text(tx, y + 16, t, 't1', 12, { weight: isCur ? 640 : 520 })
-        const tw = measure(t, 12) + 8
-        body += text(tx + tw, y + 16, fitText((ev.detail ?? '').replace(/^\$ /, '').replace(/ ⏎ /g, ' ; '), avail - tw, 11, true), 't3 mono', 11)
-      } else {
-        const label = ev.cat === 'edit' && ev.filePath !== undefined ? basename(ev.filePath) : ev.title
-        const t = fitText(label, avail * 0.6, 12)
-        body += text(tx, y + 16, t, 't1', 12, { weight: isCur ? 640 : 520 })
-        const extra = ev.cat === 'edit' ? `+${ev.added ?? 0} −${ev.removed ?? 0}` : ev.detail ?? ''
-        if (extra !== '' && extra !== label) body += text(tx + measure(t, 12) + 8, y + 16, fitText(extra, avail - measure(t, 12) - 8, 11, ev.cat !== 'edit'), ev.cat === 'edit' ? 't2 num' : 't3 mono', 11)
-      }
-      body += text(width - pad, y + 16, dur, 't3 num', 10.5, { anchor: 'end' })
-      body += `</g>`
-      y += h + 2
-    }
-  }
-  const h = y + 8
+  const h = 64
   return svgDoc(
     width,
     h,

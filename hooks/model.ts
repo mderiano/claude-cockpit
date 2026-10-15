@@ -15,7 +15,9 @@ export const MAX_CHANGES_PER_FILE = 12
 export const MAX_AGENTS = 150
 export const MAX_WORKFLOWS = 20
 export const MAX_OUTPUT = 4000
-export const MAX_INPUT = 2000
+export const MAX_INPUT = 6000
+/** A Bash command is kept this long in the call's input, so the whole of it can be shown. */
+export const MAX_COMMAND = 4000
 export const MAX_DIFF = 12000
 /** Feed rows drawn at once: a page, so the tree stays far under the text budget. */
 export const FEED_PAGE = 40
@@ -55,6 +57,7 @@ export const EMPTY_UI: CockpitUi = {
   openRuns: [],
   showAllAgents: false,
   autoOpened: false,
+  open: [],
 }
 
 export const EMPTY_SCREEN: CockpitScreen = {
@@ -244,12 +247,12 @@ export const firstLine = (text: string): string => {
   return line.trim()
 }
 
-/** Pretty, capped JSON of a tool input (envelope keys dropped). */
+/** Pretty, capped JSON of a tool input (envelope keys dropped; a command kept longer than the rest). */
 export const prettyInput = (input: Record<string, unknown>): string => {
   const rest: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(input)) {
     if (key === 'tool' || key === 'tool_use_id' || key === 'agentId' || key === 'requestMeta') continue
-    rest[key] = typeof value === 'string' ? clip(value, 600) : value
+    rest[key] = typeof value === 'string' ? clip(value, key === 'command' ? MAX_COMMAND : 600) : value
   }
   let text: string
   try {
@@ -277,6 +280,28 @@ export const fmtAgo = (at: number | undefined, now: number): string => {
   const ms = Math.max(0, now - at)
   if (ms < 5000) return 'now'
   return fmtDur(ms)
+}
+
+/**
+ * An age that changes at most once a minute: `just now`, `4m ago`, `2h ago`,
+ * `3d ago`. A drawing that carries it is the same picture for a minute.
+ */
+export const fmtAgoCoarse = (at: number | undefined, now: number): string => {
+  if (at === undefined || at === 0 || now === 0) return ''
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
+}
+
+/** A session's length to the minute: `<1m`, `39m`, `1h05`. */
+export const fmtSince = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return '<1m'
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}`
 }
 
 /** A file size: `812 B`, `14 KB`, `3.2 MB`. */

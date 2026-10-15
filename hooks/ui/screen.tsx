@@ -77,7 +77,7 @@ export const screenView = (k: Kit, s: CockpitScreen): RenderElement => {
       ) : null}
       {s.isLive ? (
         <Text key="live" color="#ef4444">
-          ● live (2 s)
+          {s.isWaiting === true ? '● live — waiting for a simulator or emulator…' : '● live (2 s)'}
         </Text>
       ) : null}
       {s.watch !== undefined ? (

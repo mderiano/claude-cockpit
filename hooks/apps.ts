@@ -364,6 +364,20 @@ export const appScreenshotTool = (app: AppDef, tool: string, available: readonly
 /** Whether this call is itself a look at the screen (no follow-up needed). */
 export const isShotTool = (tool: string): boolean => SHOT_RE.test(mcpToolName(tool))
 
+/**
+ * The frame a tool's picture goes to: one per MCP server and browser tab
+ * (`tool:<server>[:<tabId>]`), one per image file read (`read:<path>`), else
+ * one per tool.
+ */
+export const frameKeyFor = (tool: string, input: Record<string, unknown>): string => {
+  const server = mcpServer(tool)
+  const tab = typeof input.tabId === 'string' || typeof input.tabId === 'number' ? String(input.tabId) : ''
+  if (server !== undefined) return `tool:${server}${tab !== '' ? `:${tab}` : ''}`
+  const path = typeof input.file_path === 'string' ? input.file_path : ''
+  if (tool === 'Read' && path !== '') return `read:${path}`
+  return `tool:${tool}`
+}
+
 // ---------------------------------------------------------------- window capture
 /**
  * JXA run by `osascript -l JavaScript -e <this> <app name>`: the largest

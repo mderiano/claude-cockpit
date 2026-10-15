@@ -11,23 +11,35 @@ Cockpit only watches. It never blocks or changes a tool call. If something break
 - **Button above the prompt**: while the pane is closed, a `◆ Open Cockpit · 198` button reopens it in one click.
 - **Button at the bottom right**, beside the mode labels: `◆ 198 · 2 agents` (tool calls, running agents). One click opens or closes the pane.
 - **Desktop app**: the pane opens by itself as a sidebar, once per session. To turn that off, disable the plugin's `autoOpen` option.
-- **Command**: `/cockpit` opens the pane, `/cockpit close` closes it, `/cockpit live [on|off]` sets continuous screen capture, `/cockpit watch <App>` follows an app's window (macOS), `/cockpit watch off` stops.
+- **Command**: `/cockpit` opens the pane, `/cockpit close` closes it, `/cockpit live [on|off]` sets continuous screen capture (it stays on until you turn it off), `/cockpit watch <App>` follows an app's window (macOS), `/cockpit watch off` stops.
 
 ## What you see (desktop app)
 
 One view, no tabs, as if you were looking over Claude's shoulder.
 
-- **Header**: tool calls, commands, files changed (`+`/`−`), running agents, errors, session time, and a curve of the last 6 minutes of activity.
-- **NOW**, what Claude is doing right now, drawn large:
-  - a **command** in a terminal window: the command, a cursor while it runs, then the end of its output;
-  - a **file change** with its colored diff (a subagent's too);
-  - an **agent** or a **workflow** started: its state, what it is doing this moment, a progress bar with one segment per agent;
-  - the **screen**: the browser, the simulator, an app's viewport or window, or an image Claude just looked at or rendered, refreshed after each action. Its caption says where it comes from (`OpenSCAD · out/preview.png`, `Blender · get viewport screenshot`, `Krita · untitled.kra`).
+- **Header**: tool calls, commands, files changed (`+`/`−`), running agents, errors, session time, and a curve of the last 6 minutes of activity. Right under it, always there, the **Live screen** and **Capture screen** buttons.
+- **NOW**, only while something is happening; when nothing is, the section is not drawn at all:
+  - a **command** running, in a terminal window: the command and a cursor;
+  - any other **call** running (a fetch, an MCP tool, a file being edited), drawn large;
+  - a **subagent** at work: its card, then its calls as lines (the running one first, then its latest five), the command it runs in a terminal and the file it just changed with its diff;
+  - a **workflow** run: its state, a progress bar with one segment per agent, and its two busiest agents shown like subagents;
+  - the **screens**: each simulator and emulator while Live is on, the window you watch, and a picture a call just made (a browser screenshot, a `Read` of a PNG, an image a command wrote) while Claude's turn goes on. Several at once are shown together, two phones side by side when the pane is wide enough. Each says above it where it comes from (`iPhone 17 Pro · Live`, `OpenSCAD · out/preview.png · just now`, `Krita · untitled.kra · Watching`).
 
   A call that works with a known app carries that app's badge (its colour and name), and an app's command is titled by what it does: `Blender · Render`, `Godot · Export`, `OpenSCAD · Render`. A binary asset a command or a Write changed (`.blend`, `.FCStd`, `.uasset`, `.umap`, `.stl`, `.glb`...) gets an "Asset changed" card with its size instead of a diff.
-  
-  When nothing runs, the last action stays in view.
-- **HISTORY**, below: files and agents keep their card; commands, reads and searches fold into compact runs. Hover a line to see its output.
+- **HISTORY**, below: what just ended goes straight to the top. The main loop's last command keeps its terminal with the end of its output; a file change keeps its diff (20 lines for the newest, 10 for the next two, then the file's head alone); agents and workflow runs keep their card; other commands, reads and searches fold into compact runs: a summary line, then their newest three calls as lines. A screen that is no longer happening shows as a smaller card just above the call that made it.
+
+### Click to unfold
+
+Everything cut short opens with a click, and closes the same way:
+
+- **`+ N more`** under a run shows all its calls (**Show less** folds them back);
+- **a call's line** shows, under it, what it was (tool, state, time, exit code, agent), its whole command (or its input) and its whole output;
+- **Show full command and output** under a terminal (or **Show input and output** under another call's card, **Show prompt and answer** under an agent's) shows the same under the card;
+- **Show N more lines** under a diff shows it whole (**Show less** folds it).
+
+What you unfolded stays unfolded as the view updates (40 things at most), until `/clear`.
+
+The view is made of still images and native lines: nothing in it reloads unless what it shows changed, and times move each second only while something runs (ages change once a minute).
 
 In the terminal, the pane keeps a tabbed view (Feed, Files, Agents, Screen; keys 1 to 4).
 
@@ -44,7 +56,15 @@ In the terminal, the pane keeps a tabbed view (Feed, Files, Agents, Screen; keys
 | An app's MCP screenshot tool | Nothing. After an action on an app's MCP server (blender-mcp, a Godot or Unity server...) whose result holds no image, Cockpit calls that server's screenshot tool (`get_viewport_screenshot`, or a tool named like `screenshot` / `capture_viewport`), only when the app allows that call without asking you. |
 | An app's window (macOS) | `/cockpit watch <App>`, or `"window"` set on an app of your `cockpit.json`, and the **Screen Recording** permission for Claude (System Settings › Privacy & Security › Screen Recording). Only that app's frontmost window is captured (`screencapture -l <window id>`), never the whole screen. |
 
-The "Live screen" button captures the simulator or emulator every 2 s; "Capture screen" takes one frame. In the desktop app the frame is drawn as an SVG; in the terminal through the kitty graphics protocol (kitty, Ghostty).
+### Live screen
+
+The **Live screen** button (or `/cockpit live on`) captures every booted simulator (iOS, watchOS, visionOS; four at most) and every connected Android device (four at most, six devices in all) every 2 s, each in its own frame, side by side. Live stays on until you turn it off (the button, `/cockpit live off`):
+
+- no simulator or emulator yet: it keeps looking (after 2 s, then 5 s, then every 10 s) and NOW says "Live screen — waiting for a simulator or emulator…"; the first one booted shows by itself;
+- a device shut down or unplugged: its frame goes, the others stay;
+- a capture that fails: the reason shows under the buttons and Live looks again later.
+
+**Capture screen** takes one frame of each device (or of the watched window), shown under NOW for a minute. After a simulator action of Claude's, the simulator is captured too. In the desktop app the frames are drawn as SVG; in the terminal through the kitty graphics protocol (kitty, Ghostty), the first device on the Screen tab.
 
 ### Watching an app's window
 
@@ -121,4 +141,4 @@ claude plugin test /path/to/claude-cockpit
 
 ## Limits
 
-Cockpit keeps 300 calls, 200 files (12 changes per file), 150 agents and 20 workflow runs. Outputs are cut at about 4,000 characters and diffs at 12,000. Only one screen frame is kept: each new one replaces the last (an image file is read as is up to about 90 KB, larger ones are shrunk with `sips`). `/clear` resets everything except the selected tab.
+Cockpit keeps 300 calls, 200 files (12 changes per file), 150 agents and 20 workflow runs. Outputs are cut at about 4,000 characters, commands at 4,000 and diffs at 12,000 (an unfolded diff shows 600 lines at most). It keeps six screen frames at most, one per source (a simulator, an emulator, a window, a browser tab, an MCP server, an image file): a new picture replaces its source's last one, and past six the oldest goes, never a device Live follows (an image file is read as is up to about 90 KB, larger ones are shrunk with `sips`). `/clear` resets everything except the selected tab, Live and the watch.

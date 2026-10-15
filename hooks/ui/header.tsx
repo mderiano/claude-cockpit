@@ -7,7 +7,7 @@ import {
   ADDED,
   CAT_COLOR,
   fmtCount,
-  fmtDur,
+  fmtSince,
   MUTED,
   plural,
   REMOVED,
@@ -50,8 +50,8 @@ export const header = (k: Kit, d: HeaderData): RenderElement => {
   const running = agents.filter(a => a.status === 'running').length
   const finished = agents.filter(a => a.status === 'done' || a.status === 'idle').length
   const failed = agents.filter(a => a.status === 'failed' || a.status === 'killed').length
-  const since = k.now - stats.startedAt
-  const elapsed = stats.startedAt > 0 && k.now > 0 ? (since < 1000 ? '0s' : fmtDur(since)) : '—'
+  // To the minute: the clock moves each second only while something runs.
+  const elapsed = stats.startedAt > 0 && k.now > 0 ? fmtSince(k.now - stats.startedAt) : '—'
   const isBusy = stats.isWorking || stats.running > 0 || running > 0
   const pulse = Math.floor(k.now / 1000) % 2 === 0
   const series = sparkSeries(stats, k.now)

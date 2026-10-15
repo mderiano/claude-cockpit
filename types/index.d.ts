@@ -157,10 +157,23 @@ export type CockpitUi = {
   autoOpened?: boolean
   /** The pane is up on some surface (opened and not closed since). */
   isPaneShown?: boolean
+  /**
+   * What the person unfolded on the desktop's live view, oldest first, at
+   * most 40: `call:<id>` (a call's command, input and output), `run:<key>`
+   * (every row of a run), `diff:<id>` (a change's whole diff).
+   */
+  open?: string[]
 }
 
+/**
+ * The single screen the terminal's Screen tab draws (the newest frame, or
+ * the first device Live follows), and the screen's switches.
+ */
 export type CockpitScreen = {
-  /** Polling the emulator while the Screen tab shows. */
+  /**
+   * Live screen: every booted simulator and connected emulator is looked at
+   * every 2 s (slower while there is none) until the person turns it off.
+   */
   isLive: boolean
   /**
    * Where the frame came from: a device capture, an image in a tool's result
@@ -187,6 +200,37 @@ export type CockpitScreen = {
   at?: number
   error?: string
   isBusy?: boolean
+  /** Live is on and its last look found no simulator or emulator: it keeps looking. */
+  isWaiting?: boolean
+}
+
+/** Where a frame comes from. */
+export type CockpitFrameSource = 'ios' | 'android' | 'tool' | 'file' | 'window'
+
+/**
+ * One screen among several, each kept under its own key so a simulator, an
+ * emulator, a window and a tool's picture show side by side:
+ * `ios:<udid>`, `android:<serial>`, `window:<app>`,
+ * `tool:<mcp server>[:<tabId>]`, `file:<path>`, `read:<path>`.
+ */
+export type CockpitFrame = {
+  key: string
+  source: CockpitFrameSource
+  label: string
+  /** JPEG/PNG base64 small enough for an Svg. */
+  b64: string
+  mime: string
+  width?: number
+  height?: number
+  /** When it was captured. */
+  at: number
+  /** The tool call it came from, when one did. */
+  eventId?: string
+  /** The app it shows, when the registry knows it: its name and colour. */
+  app?: string
+  appColor?: string
+  /** Captured because the person asked (Capture screen), with no call behind it. */
+  isManual?: boolean
 }
 
 declare module 'claude-code' {
@@ -201,6 +245,10 @@ declare module 'claude-code' {
       stats: CockpitStats
       ui: CockpitUi
       screen: CockpitScreen
+      /** The frames by key; a removed one is null. */
+      frame: StateFamily<CockpitFrame | null>
+      /** The keys of the frames kept, newest first, at most 6. */
+      frameKeys: string[]
       now: number
       surface: string
       tmp: string

@@ -1,11 +1,11 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Plugin } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import type { CockpitAgent, CockpitChange, CockpitEvent, CockpitFeedRef, CockpitFile, CockpitScreen, CockpitStats, CockpitUi, CockpitWorkflow } from '../types'
+import type { CockpitAgent, CockpitChange, CockpitEvent, CockpitFeedRef, CockpitFile, CockpitFrame, CockpitScreen, CockpitStats, CockpitUi, CockpitWorkflow } from '../types'
 
 import { statusLine } from '../hooks/capture'
 import { diffLines, diffTexts, renderHunks } from '../hooks/diff'
-import { planLive, trimDiff } from '../hooks/live'
+import { addFrameKey, fullCommand, momentKey, planLive, toggleOpen, trimDiff } from '../hooks/live'
 import type { LiveInput } from '../hooks/live'
 import { clean, EMPTY_SCREEN, EMPTY_STATS, sparkText } from '../hooks/model'
 import { imageSize, parseSimctl, sipsError } from '../hooks/screen'
@@ -15,7 +15,7 @@ const SURFACES = ['terminal', 'desktop'] as const
 const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 
 /** Every Svg the live view (desktop, vscode, mobile) drew, its markup joined. */
-type Drawn = { findAll: (q: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }
+type Drawn = { findAll: (q: { type: string }) => Promise<{ key?: string; props: Record<string, unknown>; text?: string; children?: unknown[] }[]> }
 const drawnSvg = async (ui: Drawn): Promise<string> => (await ui.findAll({ type: 'Svg' })).map(one => String(one.props.source)).join('\n')
 
 const paneProps = (bodyColumns = 80, bodyRows = 40) => ({
@@ -60,6 +60,8 @@ const spy: Plugin = {
       else if (key === 'screen') value = (await $.state.get({ plugin: 'cockpit', key: 'screen' })).value
       else if (key === 'event') value = (await $.state.get({ plugin: 'cockpit', key: 'event', id })).value
       else if (key === 'changes') value = (await $.state.get({ plugin: 'cockpit', key: 'changes', id })).value
+      else if (key === 'frame') value = (await $.state.get({ plugin: 'cockpit', key: 'frame', id })).value
+      else if (key === 'frameKeys') value = (await $.state.get({ plugin: 'cockpit', key: 'frameKeys' })).value
       return { text: JSON.stringify(value ?? null) }
     })
   },
@@ -76,6 +78,8 @@ type Peek = {
   screen: CockpitScreen
   event: CockpitEvent | null
   changes: CockpitChange[] | null
+  frame: CockpitFrame | null
+  frameKeys: string[]
 }
 const ORIGIN = { kind: 'composer' as const }
 const PRESENTATION = { isFullscreen: true, columns: 120 }
@@ -193,13 +197,17 @@ describe('cockpit', () => {
         expect(codes.some(c => String(c.props.source).includes('PASS src/a.test.ts'))).toBe(true)
         await ui.press({ key: 'ev-b1' })
       } else {
-        // The live view: the call just made, drawn large as a terminal under NOW.
+        // The live view: nothing runs, so no NOW; the command just made tops
+        // the history, drawn as a terminal with its output.
         const svg = await drawnSvg(ui)
-        expect(svg).toContain('NOW')
+        expect(svg).not.toContain('NOW')
+        expect(svg).toContain('HISTORY')
         expect(svg).toContain('Run the tests')
         expect(svg).toContain('npm test')
         expect(svg).toContain('All good: 12 tests')
         expect(await ui.find({ key: 'tab-feed' })).toBeUndefined()
+        // Short and whole: nothing more to unfold.
+        expect(await ui.find({ key: 'cmd:b1' })).toBeUndefined()
       }
       await ui.unmount()
     }
@@ -341,11 +349,11 @@ describe('cockpit', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps() })
       if (surface !== 'terminal') {
-        // The live view: the running subagent's card, with its call in it.
+        // The live view: the running subagent's card, its call a native row under it.
         const svg = await drawnSvg(ui)
         expect(svg).toContain('Agent running')
-        expect(svg).toContain('x.ts')
         expect(svg).toContain('Bug hunter')
+        expect((await ui.find({ key: 'row:r1' }))?.text).toContain('x.ts')
         expect(await ui.find({ key: 'f-ag-1' })).toBeUndefined()
         await ui.unmount()
         continue
@@ -443,8 +451,8 @@ describe('cockpit', () => {
       if (surface !== 'terminal') {
         const svg = await drawnSvg(ui)
         expect(svg).toContain('Cockpit')
-        expect(svg).toContain('NOW')
-        // Nothing has happened yet: no history, and the idle line.
+        // Nothing has happened yet: no NOW, no history, one friendly line.
+        expect(svg).not.toContain('NOW')
         expect(svg).not.toContain('HISTORY')
         expect(await ui.find({ text: /Waiting for Claude/ })).toBeDefined()
         // No tabs: the screen's two buttons instead.
@@ -500,7 +508,10 @@ describe('cockpit', () => {
     const { clock } = engine(on)
     // The tool's own record holds no picture; the transcript row does.
     on('tool.call', () => ({ result: [{ type: 'text', text: 'ok' }], text: 'ok' }))
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.turn.start({ text: 'look at the page', turnId: 't-shot' })
     const png =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     await $.tool.call({ tool: 'mcp__Claude_Browser__computer', action: 'screenshot', tool_use_id: 'shot-1' } as never)
@@ -524,16 +535,29 @@ describe('cockpit', () => {
     await clock.settle()
     const screen = { value: await peek($, 'screen') }
     expect(screen.value).toMatchObject({ source: 'tool', mime: 'image/png', width: 1, height: 1 })
+    expect(await peek($, 'frameKeys')).toEqual(['tool:Claude_Browser'])
+    expect(await peek($, 'frame', 'tool:Claude_Browser')).toMatchObject({ source: 'tool', eventId: 'shot-1', b64: expect.any(String) })
     for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
       const ui = await $.ui.mount({ plugin: 'cockpit', surface, component: 'Pane', requestId: 'cockpit', props: paneProps() })
       const svgs = await ui.findAll({ type: 'Svg' })
       const at = svgs.findIndex(one => String(one.props.source).includes('<image'))
       expect(at).toBeGreaterThan(-1)
       expect(String(svgs[at]?.props.source)).toContain('<image href="data:image/png;base64,')
-      // The screen leads NOW: only the header and the section label precede it.
+      // Claude is at work: the screen leads NOW, only the header and the section label before it.
+      expect(String(svgs[1]?.props.source)).toContain('NOW')
       expect(at).toBe(2)
       await ui.unmount()
     }
+    // The turn is over: the screen is history, a smaller card above the call that took it.
+    await $.turn.complete({ answer: 'seen', durationMs: 10, isAborted: false, turnId: 't-shot', reason: 'answer' })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    const svgs = await ui.findAll({ type: 'Svg' })
+    expect(String(svgs[1]?.props.source)).toContain('HISTORY')
+    expect(String(svgs[2]?.props.source)).toContain('<image')
+    expect(Number(svgs[2]?.props.height)).toBeLessThanOrEqual(240)
+    expect(await ui.find({ type: 'Box', key: 'frame:tool:Claude_Browser' })).toBeDefined()
+    await ui.unmount()
   })
 })
 
@@ -569,12 +593,15 @@ describe('cockpit screen and bounds', () => {
       if (surface === 'terminal') {
         expect(await ui.find({ text: /iPhone 17 Pro/ })).toBeDefined()
         const image = await ui.find({ type: 'Image' })
-        expect(image?.props.source).toMatchObject({ file: expect.stringContaining('device.png'), format: 'png' })
+        expect(image?.props.source).toMatchObject({ file: expect.stringContaining('ios-U-1.png'), format: 'png' })
       } else {
-        // The capture asked for shows under NOW at once.
+        // The capture asked for shows under NOW at once, its caption native text.
         const svg = await drawnSvg(ui)
-        expect(svg).toContain('iPhone 17 Pro')
+        expect(svg).toContain('NOW')
         expect(svg).toContain('<image href="data:image/jpeg;base64,')
+        expect(svg).not.toContain('iPhone 17 Pro')
+        expect(await ui.find({ type: 'Text', text: /iPhone 17 Pro/ })).toBeDefined()
+        expect(await ui.find({ type: 'Box', key: 'frame:ios:U-1' })).toBeDefined()
       }
       await ui.unmount()
     }
@@ -614,21 +641,128 @@ describe('cockpit screen and bounds', () => {
     await ui.unmount()
   })
 
-  test('Live stops after a few failed captures, and says so', WITH_SPY, async ($, on) => {
-    const { clock } = engine(on)
+  test('Live never turns itself off: it waits for a device, shows it, and lets it go', WITH_SPY, async ($, on) => {
+    let booted: { udid: string; name: string }[] = []
+    const listing = () => JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': booted.map(d => ({ ...d, state: 'Booted' })) } })
+    const { clock, pane, argvs } = engine(on, {
+      run: argv => (argv[0] === 'xcrun' && argv[2] === 'list' ? { stdout: listing() } : argv[0] === 'xcrun' || argv[0] === 'sips' ? {} : undefined),
+      read: path => (path.endsWith('.jpg') ? { base64: PNG } : undefined),
+    })
+    pane.isUp = true
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    const looks = () => argvs.filter(a => a[0] === 'xcrun' && a[2] === 'list').length
+    const wait = async (seconds: number) => {
+      for (let i = 0; i < seconds; i += 1) {
+        await clock.advance(1000)
+        await clock.settle()
+      }
+    }
+    await ui.press({ key: 'live' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Button', key: 'live' })).toMatchObject({ props: expect.objectContaining({ label: 'Live screen: on' }) })
+    // No device for half a minute: Live keeps looking, slower and slower, and stays on.
+    const first = looks()
+    await wait(30)
+    expect(looks() - first).toBeGreaterThanOrEqual(3)
+    expect(looks() - first).toBeLessThanOrEqual(6)
+    expect(await peek($, 'screen')).toMatchObject({ isLive: true, isWaiting: true })
+    expect((await peek($, 'screen'))?.error).toBeUndefined()
+    expect(await drawnSvg(ui)).toContain('NOW')
+    expect(await ui.find({ text: /Live screen — waiting for a simulator or emulator/ })).toBeDefined()
+    // A simulator boots: its frame shows at Live's next look (10 s at most).
+    booted = [{ udid: 'U-7', name: 'iPhone 17' }]
+    await wait(11)
+    expect(await ui.find({ type: 'Box', key: 'frame:ios:U-7' })).toBeDefined()
+    expect(await ui.find({ text: /waiting for a simulator/ })).toBeUndefined()
+    expect(await peek($, 'frameKeys')).toEqual(['ios:U-7'])
+    // While it runs, a look every 2 s.
+    const during = looks()
+    await wait(6)
+    expect(looks() - during).toBeGreaterThanOrEqual(2)
+    // It shuts down: its frame goes, Live stays on and waits again.
+    booted = []
+    await wait(3)
+    expect(await ui.find({ type: 'Box', key: 'frame:ios:U-7' })).toBeUndefined()
+    expect(await peek($, 'frameKeys')).toEqual([])
+    expect(await peek($, 'frame', 'ios:U-7')).toBeNull()
+    expect(await peek($, 'screen')).toMatchObject({ isLive: true, isWaiting: true })
+    expect(await ui.find({ text: /waiting for a simulator/ })).toBeDefined()
+    // A failing tool is said, and Live still stays on.
+    await ui.unmount()
+    // Only the person turns it off.
+    await $.command.run({ command: 'cockpit', args: 'live off', origin: ORIGIN, presentation: PRESENTATION })
+    expect((await peek($, 'screen'))?.isLive).toBe(false)
+    const off = looks()
+    await wait(12)
+    expect(looks()).toBe(off)
+  })
+
+  test('Live says what failed, backs off and stays on', WITH_SPY, async ($, on) => {
+    const { clock, pane } = engine(on, {
+      run: argv => (argv[0] === 'xcrun' && argv[2] === 'list' ? { exitCode: 1, stderr: 'CoreSimulatorService connection became invalid' } : undefined),
+    })
+    pane.isUp = true
     await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
     await $.command.run({ command: 'cockpit', args: 'live on', origin: ORIGIN, presentation: PRESENTATION })
-    await clock.settle()
-    expect((await peek($, 'screen'))?.isLive).toBe(true)
-    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
-    for (let i = 0; i < 2; i += 1) {
-      await ui.press({ key: 'snap' })
+    for (let i = 0; i < 20; i += 1) {
+      await clock.advance(1000)
       await clock.settle()
     }
     const screen = await peek($, 'screen')
-    expect(screen?.isLive).toBe(false)
-    expect(screen?.error).toContain('Live stopped after 3 failed captures')
+    expect(screen).toMatchObject({ isLive: true, error: 'CoreSimulatorService connection became invalid' })
+    const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    expect(await ui.find({ text: /CoreSimulatorService connection became invalid/ })).toBeDefined()
     await ui.unmount()
+  })
+
+  test('two booted simulators are two frames, side by side where there is room', WITH_SPY, async ($, on) => {
+    // A 368x800 PNG header: portrait phones.
+    const PORTRAIT = 'iVBORw0KGgoAAAANSUhEUgAAAXAAAAMgCAIAAAC1aq62'
+    const listing = JSON.stringify({
+      devices: {
+        'com.apple.CoreSimulator.SimRuntime.tvOS-26-0': [{ udid: 'TV', name: 'Apple TV', state: 'Booted' }],
+        'com.apple.CoreSimulator.SimRuntime.iOS-26-0': [
+          { udid: 'U-1', name: 'iPhone 17', state: 'Booted' },
+          { udid: 'U-2', name: 'iPhone Air', state: 'Booted' },
+          { udid: 'U-3', name: 'iPad', state: 'Shutdown' },
+        ],
+      },
+    })
+    const { clock, argvs } = engine(on, {
+      run: argv => (argv[0] === 'xcrun' && argv[2] === 'list' ? { stdout: listing } : argv[0] === 'xcrun' || argv[0] === 'sips' ? {} : undefined),
+      read: path => (path.endsWith('.jpg') ? { base64: PORTRAIT } : undefined),
+    })
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.command.run({ command: 'cockpit', args: 'live on', origin: ORIGIN, presentation: PRESENTATION })
+    await clock.settle()
+    // Each booted simulator, in files of its own; never the Apple TV.
+    const shots = argvs.filter(a => a[0] === 'xcrun' && a[2] === 'io')
+    expect(shots.map(a => a[3])).toEqual(['U-1', 'U-2'])
+    expect(new Set(shots.map(a => a[6])).size).toBe(2)
+    expect(await peek($, 'frameKeys')).toEqual(['ios:U-1', 'ios:U-2'])
+    expect(await peek($, 'frame', 'ios:U-2')).toMatchObject({ source: 'ios', label: 'iPhone Air', width: 368, height: 800 })
+    // The single screen (the terminal's) shows the first.
+    expect(await peek($, 'screen')).toMatchObject({ source: 'ios', label: 'iPhone 17' })
+    const cardsOf = async (ui: Drawn) => (await ui.findAll({ type: 'Svg' })).filter(one => String(one.props.source).includes('<image'))
+    const framesOf = async (ui: Drawn) => (await ui.findAll({ type: 'Box' })).filter(one => String(one.key).startsWith('frame:')).map(one => one.key)
+    // Wide: two cards in one row, each half the width, the first device first.
+    const wide = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps(80) })
+    expect(await framesOf(wide)).toEqual(['frame:ios:U-1', 'frame:ios:U-2'])
+    const cards = await cardsOf(wide)
+    expect(cards).toHaveLength(2)
+    const px = Math.floor((80 - 2) * 7.3)
+    for (const card of cards) expect(Number(card.props.width)).toBeLessThanOrEqual(Math.floor((px - 2 * 7.3) / 2))
+    const row = (await wide.findAll({ type: 'Box' })).find(one => String(one.key).startsWith('frames:'))
+    expect(row?.props.flexDirection).toBe('row')
+    expect(await wide.find({ type: 'Text', text: /iPhone Air/ })).toBeDefined()
+    await wide.unmount()
+    // Narrow: one under the other, each the whole width.
+    const narrow = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps(50) })
+    expect((await narrow.findAll({ type: 'Box' })).some(one => String(one.key).startsWith('frames:'))).toBe(false)
+    expect(await framesOf(narrow)).toEqual(['frame:ios:U-1', 'frame:ios:U-2'])
+    for (const card of await cardsOf(narrow)) expect(Number(card.props.width)).toBe(Math.floor((50 - 2) * 7.3))
+    await narrow.unmount()
   })
 
   test('the feed keeps a bounded window of events', { ...WITH_SPY, timeoutMs: 120_000 }, async ($, on) => {
@@ -976,25 +1110,63 @@ describe('live plan', () => {
   })
   const edit = (id: string, over: Partial<CockpitEvent> = {}): CockpitEvent =>
     call(id, { tool: 'Edit', cat: 'edit', filePath: `/proj/${id}.ts`, added: 1, removed: 1, ...over })
+  const frame = (key: string, over: Partial<CockpitFrame> = {}): CockpitFrame => ({
+    key,
+    source: key.startsWith('ios:') ? 'ios' : key.startsWith('android:') ? 'android' : key.startsWith('window:') ? 'window' : 'tool',
+    label: key,
+    b64: PNG,
+    mime: 'image/png',
+    width: 1,
+    height: 1,
+    at: T0,
+    ...over,
+  })
   /** `events` newest first, as the render hook hands them. */
   const plan = (events: CockpitEvent[], over: Partial<LiveInput> = {}) =>
-    planLive({ events, agents: [], workflows: [], screen: EMPTY_SCREEN, changes: new Map(), now: T0 + 1000, ...over })
-  const ids = (moments: { kind: string; ev?: CockpitEvent; events?: CockpitEvent[] }[]) =>
-    moments.map(m => (m.kind === 'run' ? `run(${(m.events ?? []).map(e => e.id).join(',')})` : m.kind === 'screen' ? 'screen' : (m.ev?.id ?? '?')))
+    planLive({ events, agents: [], workflows: [], frames: [], changes: new Map(), now: T0 + 1000, isLive: false, isWorking: false, ...over })
+  type Loose = { kind: string; ev?: CockpitEvent; events?: CockpitEvent[]; frame?: CockpitFrame }
+  const ids = (moments: Loose[]) =>
+    moments.map(m =>
+      m.kind === 'run'
+        ? `run(${(m.events ?? []).map(e => e.id).join(',')})`
+        : m.kind === 'frame'
+          ? `frame(${m.frame?.key ?? '?'})`
+          : m.kind === 'liveWait'
+            ? 'wait'
+            : (m.ev?.id ?? '?'),
+    )
 
-  test('a running command is now; what ran before goes to history', async () => {
-    const p = plan([call('b2', { status: 'running', endedAt: undefined }), call('b1')])
+  test('a running command is now; what ran before goes to history, the last command keeping its terminal', async () => {
+    const p = plan([call('b2', { status: 'running', endedAt: undefined }), call('b1'), call('b0')])
     expect(ids(p.now)).toEqual(['b2'])
     expect(p.now[0]).toMatchObject({ kind: 'call' })
-    expect(ids(p.history)).toEqual(['run(b1)'])
+    expect(ids(p.history)).toEqual(['b1', 'run(b0)'])
+    expect(p.history[0]).toMatchObject({ kind: 'call' })
   })
 
-  test('when nothing runs, the newest main-loop call stays now', async () => {
-    // A subagent's newer call is not the main loop's: it does not take the spot.
-    const p = plan([call('sub', { agentId: 'ag-1', tool: 'Read', cat: 'read' }), call('m2'), call('m1')])
-    expect(ids(p.now)).toEqual(['m2'])
-    expect(ids(p.history)).toEqual(['run(sub,m1)'])
-    expect(plan([]).now).toEqual([])
+  test('NOW is only what runs: finished calls go straight to the history', async () => {
+    // Nothing runs: no NOW at all, the newest finished call tops the history.
+    const p = plan([call('sub', { agentId: 'ag-1', tool: 'Read', cat: 'read' }), call('m2'), call('m1', { tool: 'Grep', cat: 'search' })])
+    expect(p.now).toEqual([])
+    expect(ids(p.history)).toEqual(['run(sub)', 'm2', 'run(m1)'])
+    expect(plan([])).toEqual({ now: [], history: [] })
+    // A running read is now, drawn large; once done it folds into a run.
+    expect(ids(plan([call('r1', { tool: 'Read', cat: 'read', status: 'running', endedAt: undefined })]).now)).toEqual(['r1'])
+    expect(ids(plan([call('r1', { tool: 'Read', cat: 'read' })]).history)).toEqual(['run(r1)'])
+  })
+
+  test('a finished edit tops the history with its change; a running one is now, its head alone', async () => {
+    const change: CockpitChange = { id: 'e1', at: T0, tool: 'Edit', diff: '@@ -1,1 +1,1 @@\n-a\n+b\n', added: 1, removed: 1 }
+    const done = plan([edit('e1'), call('b1')], { changes: new Map([['e1', change]]) })
+    expect(done.now).toEqual([])
+    expect(done.history[0]).toMatchObject({ kind: 'file', ev: { id: 'e1' }, change, isNew: false })
+    expect(ids(done.history)).toEqual(['e1', 'b1'])
+    // A subagent's finished edit too: no "fresh edit stays now" any more.
+    const sub = plan([edit('e2', { agentId: 'ag-9' })], { changes: new Map([['e2', { ...change, id: 'e2' }]]) })
+    expect(sub.now).toEqual([])
+    expect(sub.history[0]).toMatchObject({ kind: 'file', ev: { id: 'e2' } })
+    const running = plan([edit('e3', { status: 'running', endedAt: undefined })])
+    expect(running.now).toEqual([{ kind: 'file', ev: expect.objectContaining({ id: 'e3' }), change: undefined, isNew: false }])
   })
 
   test('a running subagent is live now: its current call, its latest ones, its fresh edit', async () => {
@@ -1018,41 +1190,83 @@ describe('live plan', () => {
     expect(plan(events.map(e => ({ ...e, status: 'ok' as const })), { agents: [{ ...agent, status: 'done' }] }).now.some(m => m.kind === 'agentLive')).toBe(false)
   })
 
-  test("a subagent's fresh edit shows now, with its change; a stale one is history", async () => {
-    const change: CockpitChange = { id: 'e1', at: T0, tool: 'Edit', agentId: 'ag-1', diff: '@@ -1,1 +1,1 @@\n-a\n+b\n', added: 1, removed: 1 }
-    const events = [call('m1'), edit('e1', { agentId: 'ag-1', endedAt: T0 + 500 })]
-    const fresh = plan(events, { changes: new Map([['e1', change]]) })
-    expect(ids(fresh.now)).toEqual(['m1', 'e1'])
-    expect(fresh.now[1]).toMatchObject({ kind: 'file', change, isNew: false })
-    const stale = plan(events, { changes: new Map([['e1', change]]), now: T0 + 60_000 })
-    expect(ids(stale.now)).toEqual(['m1'])
-    expect(stale.history[0]).toMatchObject({ kind: 'file', change })
+  test('a workflow run is now while one of its agents runs, though its call returned at launch', async () => {
+    const wf: CockpitWorkflow = { runId: 'r1', name: 'ultra', toolUseId: 'w1', startedAt: T0 }
+    const agents: CockpitAgent[] = [1, 2, 3].map(i => ({ id: `wa${i}`, description: `part ${i}`, type: 'gp', status: i === 3 ? 'done' : 'running', startedAt: T0, tools: i, errors: 0, runId: 'r1', workflowIndex: i, lastAt: T0 + i }))
+    const p = plan([call('w1', { tool: 'Workflow', cat: 'agent' })], { agents, workflows: [wf] })
+    expect(p.now.map(m => m.kind)).toEqual(['workflow', 'agentLive', 'agentLive'])
+    expect(p.history).toEqual([])
+    const over = plan([call('w1', { tool: 'Workflow', cat: 'agent' })], { agents: agents.map(a => ({ ...a, status: 'done' as const })), workflows: [wf] })
+    expect(over.now).toEqual([])
+    expect(over.history[0]).toMatchObject({ kind: 'workflow', wf: { runId: 'r1' } })
   })
 
-  test('a recent screen action with a frame puts the screen first', async () => {
-    const frame = { ...EMPTY_SCREEN, source: 'tool' as const, label: 'Claude Browser · computer', b64: PNG, mime: 'image/png', at: T0 }
-    const events = [call('m2'), call('nav', { tool: 'mcp__Claude_Browser__navigate', cat: 'browser' })]
-    const p = plan(events, { screen: frame })
-    expect(p.now[0]).toEqual({ kind: 'screen' })
-    expect(ids(p.now)).toEqual(['screen', 'm2'])
-    // The action itself is the screen: drawn nowhere else.
-    expect(ids(p.history)).toEqual([])
-    // No frame, or an action long past: no screen.
-    expect(ids(plan(events).now)).toEqual(['m2'])
-    expect(ids(plan(events, { screen: frame, now: T0 + 200_000 }).now)).toEqual(['m2'])
-    // A device frame the person just captured shows without any screen action.
-    const sim = { ...frame, source: 'ios' as const, label: 'iPhone 17' }
-    expect(ids(plan([call('m1')], { screen: sim }).now)).toEqual(['screen', 'm1'])
-    expect(ids(plan([call('m1')], { screen: sim, now: T0 + 200_000 }).now)).toEqual(['m1'])
+  test('frames are now while Live follows them, while their call runs, while Claude works on a fresh one', async () => {
+    const sim = frame('ios:U-1')
+    // Live on: the simulator is now; no device yet: Live is waiting, and says so.
+    expect(ids(plan([], { frames: [sim], isLive: true }).now)).toEqual(['frame(ios:U-1)'])
+    expect(ids(plan([], { isLive: true }).now)).toEqual(['wait'])
+    // Live off: a device frame with no call behind it is shown nowhere.
+    expect(plan([], { frames: [sim] })).toEqual({ now: [], history: [] })
+    // A capture the person asked for shows a minute.
+    expect(ids(plan([], { frames: [{ ...sim, isManual: true }] }).now)).toEqual(['frame(ios:U-1)'])
+    expect(plan([], { frames: [{ ...sim, isManual: true }], now: T0 + 61_000 }).now).toEqual([])
+    // A tool's picture: now while its call runs, or while Claude works and it is fresh ...
+    const shot = frame('tool:Claude_Browser', { eventId: 'nav' })
+    const nav = call('nav', { tool: 'mcp__Claude_Browser__navigate', cat: 'browser' })
+    expect(ids(plan([{ ...nav, status: 'running', endedAt: undefined }], { frames: [shot] }).now)).toEqual(['frame(tool:Claude_Browser)', 'nav'])
+    expect(ids(plan([nav], { frames: [shot], isWorking: true }).now)).toEqual(['frame(tool:Claude_Browser)'])
+    // ... else a smaller card at the place of the call that made it.
+    const later = plan([call('b2'), nav, call('b0')], { frames: [shot], isWorking: true, now: T0 + 61_000 })
+    expect(later.now).toEqual([])
+    expect(ids(later.history)).toEqual(['b2', 'frame(tool:Claude_Browser)', 'run(nav,b0)'])
+    // Its call out of the window: shown nowhere.
+    expect(plan([call('b2')], { frames: [shot] }).history.some(m => m.kind === 'frame')).toBe(false)
+    // The watched window is now; once the watch stops, it is not.
+    const win = frame('window:Finder')
+    expect(ids(plan([], { frames: [win], watch: 'Finder' }).now)).toEqual(['frame(window:Finder)'])
+    expect(plan([], { frames: [win] }).now).toEqual([])
+    // Several at once, newest first.
+    expect(ids(plan([], { frames: [frame('ios:U-2'), sim, win], isLive: true, watch: 'Finder' }).now)).toEqual(['frame(ios:U-2)', 'frame(ios:U-1)', 'frame(window:Finder)'])
   })
 
   test('small calls fold into one run; an edit splits them', async () => {
     const reads = [call('r3', { tool: 'Read', cat: 'read' }), call('g2', { tool: 'Grep', cat: 'search' }), call('b1')]
-    const p = plan([call('now'), ...reads])
-    expect(ids(p.history)).toEqual(['run(r3,g2,b1)'])
-    expect(p.history).toHaveLength(1)
-    const split = plan([call('now'), call('r2', { tool: 'Read', cat: 'read' }), edit('old', { endedAt: T0 - 60_000 }), call('b1')])
-    expect(ids(split.history)).toEqual(['run(r2)', 'old', 'run(b1)'])
+    const p = plan([call('last'), ...reads])
+    expect(ids(p.history)).toEqual(['last', 'run(r3,g2,b1)'])
+    const split = plan([call('last'), call('r2', { tool: 'Read', cat: 'read' }), edit('old', { endedAt: T0 - 60_000 }), call('b1')])
+    expect(ids(split.history)).toEqual(['last', 'run(r2)', 'old', 'run(b1)'])
+  })
+
+  test('moment keys come from ids; a run keeps its key as it grows at its newest end', async () => {
+    const read = (id: string) => call(id, { tool: 'Read', cat: 'read' })
+    const first = plan([read('r2'), read('r1')])
+    expect(first.history.map(momentKey)).toEqual(['run:r1'])
+    const grown = plan([read('r4'), read('r3'), read('r2'), read('r1')])
+    expect(grown.history.map(momentKey)).toEqual(['run:r1'])
+    const change: CockpitChange = { id: 'e1', at: T0, tool: 'Edit', diff: '@@ -1,1 +1,1 @@\n-a\n+b\n', added: 1, removed: 1 }
+    const mixed = plan([call('b9'), edit('e1'), read('r1')], { changes: new Map([['e1', change]]), frames: [frame('ios:U-1')], isLive: true })
+    expect([...mixed.now, ...mixed.history].map(momentKey)).toEqual(['frame:ios:U-1', 'call:b9', 'file:e1', 'run:r1'])
+    expect(momentKey({ kind: 'liveWait' })).toBe('live-wait')
+  })
+
+  test('unfolded keys toggle and stay bounded; frame keys keep their place and evict the oldest', async () => {
+    expect(toggleOpen(undefined, 'call:a')).toEqual(['call:a'])
+    expect(toggleOpen(['call:a', 'run:b'], 'call:a')).toEqual(['run:b'])
+    const many = Array.from({ length: 40 }, (_, i) => `call:${i}`)
+    expect(toggleOpen(many, 'diff:x')).toEqual([...many.slice(1), 'diff:x'])
+    expect(addFrameKey(['b', 'a'], 'a')).toEqual({ keys: ['b', 'a'], evicted: [] })
+    expect(addFrameKey(['b', 'a'], 'c')).toEqual({ keys: ['c', 'b', 'a'], evicted: [] })
+    const six = ['f', 'e', 'd', 'c', 'b', 'a']
+    expect(addFrameKey(six, 'g')).toEqual({ keys: ['g', 'f', 'e', 'd', 'c', 'b'], evicted: ['a'] })
+    // A frame Live follows is never the one evicted while another can go.
+    expect(addFrameKey(six, 'g', key => key === 'a')).toEqual({ keys: ['g', 'f', 'e', 'd', 'c', 'a'], evicted: ['b'] })
+  })
+
+  test('the whole command of a Bash call comes from its input', async () => {
+    const long = `cat > x.sh <<'EOF'\n${'echo hi\n'.repeat(80)}EOF`
+    expect(fullCommand(call('c', { input: JSON.stringify({ command: long }, null, 2), detail: '$ cat > x.sh <<…' }))).toBe(long)
+    expect(fullCommand(call('c', { input: '{ cut short', detail: '$ npm test ⏎ echo done' }))).toBe('npm test\necho done')
   })
 })
 
@@ -1242,6 +1456,206 @@ describe('cockpit footer chip', () => {
   })
 })
 
+describe('cockpit desktop live view', () => {
+  const T = 1_700_000_000_000
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const mountDesktop = ($: { ui: { mount: (input: never) => Promise<unknown> } }, columns = 80) =>
+    $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps(columns) } as never) as Promise<
+      Drawn & {
+        find: (q: { type?: string; key?: string; text?: string | RegExp }) => Promise<{ key?: string; props: Record<string, unknown>; text: string } | undefined>
+        press: (q: { key: string }) => Promise<unknown>
+        unmount: () => Promise<void>
+      }
+    >
+
+  test('a run, a row and a diff unfold on a press', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    const minus = Array.from({ length: 30 }, (_, i) => `-old ${i}`)
+    const plus = Array.from({ length: 30 }, (_, i) => `+new ${i}`)
+    const long = "printf '%s\\n' alpha beta gamma | sort | uniq -c\necho done"
+    on('tool.call', ($, e) =>
+      e.tool === 'Edit'
+        ? { result: { filePath: '/proj/big.ts', structuredPatch: [{ oldStart: 1, oldLines: 30, newStart: 1, newLines: 30, lines: [...minus, ...plus] }] }, text: 'updated' }
+        : { result: { stdout: `out of ${e.tool_use_id}`, stderr: '', interrupted: false }, text: 'ok' },
+    )
+    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Bash', command: long, tool_use_id: 'x-b1' })
+    for (let i = 1; i <= 8; i += 1) await $.tool.call({ tool: 'Grep', pattern: `p${i}`, tool_use_id: `x-g${i}` } as never)
+    await $.tool.call({ tool: 'Edit', file_path: '/proj/big.ts', old_string: 'a', new_string: 'b', tool_use_id: 'x-e1' })
+    await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List', tool_use_id: 'x-b2' })
+    await clock.settle()
+    const ui = await mountDesktop($)
+    const rows = async () => (await ui.findAll({ type: 'Button' })).map(one => String(one.key)).filter(key => key.startsWith('row:'))
+    // The run folds: its newest three rows, then « + 6 more ».
+    expect(await rows()).toEqual(['row:x-g8', 'row:x-g7', 'row:x-g6'])
+    expect((await ui.find({ key: 'runmore:x-b1' }))?.text).toBe('+ 6 more')
+    await ui.press({ key: 'runmore:x-b1' })
+    expect(await rows()).toHaveLength(9)
+    expect(await ui.find({ key: 'runmore:x-b1' })).toBeUndefined()
+    expect(await ui.find({ key: 'runless:x-b1' })).toBeDefined()
+    expect((await peek($, 'ui'))?.open).toEqual(['run:x-b1'])
+    // A row unfolds under it: its facts, the whole command, its output.
+    expect((await ui.findAll({ type: 'Code' })).some(one => one.props.source === long)).toBe(false)
+    await ui.press({ key: 'row:x-b1' })
+    const codes = await ui.findAll({ type: 'Code' })
+    expect(codes.some(one => one.props.language === 'bash' && one.props.source === long)).toBe(true)
+    expect(codes.some(one => one.props.source === 'out of x-b1')).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^Bash · done · .+ · exit 0$/ })).toBeDefined()
+    await ui.press({ key: 'row:x-b1' })
+    expect((await ui.findAll({ type: 'Code' })).some(one => one.props.source === long)).toBe(false)
+    await ui.press({ key: 'runless:x-b1' })
+    expect(await rows()).toHaveLength(3)
+    // The diff: twenty lines, the rest a press away, and back.
+    const diffOf = async () => String((await ui.findAll({ type: 'Code' })).find(one => one.props.format === 'diff')?.props.source)
+    expect((await diffOf()).trimEnd().split('\n')).toHaveLength(20)
+    expect((await ui.find({ key: 'diffmore:x-e1' }))?.text).toBe('Show 41 more lines')
+    await ui.press({ key: 'diffmore:x-e1' })
+    expect(await diffOf()).toContain('+new 29')
+    expect(await ui.find({ key: 'diffmore:x-e1' })).toBeUndefined()
+    await ui.press({ key: 'diffless:x-e1' })
+    expect(await diffOf()).not.toContain('+new 29')
+    // The last command keeps its terminal; short and whole, nothing to unfold.
+    expect(await drawnSvg(ui)).toContain('List')
+    expect(await ui.find({ key: 'cmd:x-b2' })).toBeUndefined()
+    await ui.press({ key: 'diffmore:x-e1' })
+    await ui.unmount()
+    // What was unfolded goes with /clear.
+    await $.session.end({ reason: 'clear', sessionId: 's-1', resume: { id: 's-1' } })
+    expect((await peek($, 'ui'))?.open).toEqual([])
+  })
+
+  test('a long command unfolds under its terminal', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    const steps = Array.from({ length: 12 }, (_, i) => `echo step-${i} && sleep 0`).join(' && ')
+    on('tool.call', () => ({ result: { stdout: Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'), stderr: '', interrupted: false }, text: 'ok' }))
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.tool.call({ tool: 'Bash', command: steps, description: 'Run the steps', tool_use_id: 'y-b1' })
+    await clock.settle()
+    const ui = await mountDesktop($)
+    expect((await ui.find({ key: 'cmd:y-b1' }))?.text).toBe('Show full command and output')
+    expect(await drawnSvg(ui)).not.toContain('line 0<')
+    await ui.press({ key: 'cmd:y-b1' })
+    const codes = await ui.findAll({ type: 'Code' })
+    expect(codes.some(one => one.props.source === steps && one.props.language === 'bash')).toBe(true)
+    expect(codes.some(one => String(one.props.source).startsWith('line 0\nline 1'))).toBe(true)
+    expect((await ui.find({ key: 'cmd:y-b1' }))?.text).toBe('Hide details')
+    await ui.unmount()
+  })
+
+  test('moments keep id-based keys from one drawing to the next', WITH_SPY, async ($, on) => {
+    const { clock } = engine(on)
+    on('tool.call', ($, e) =>
+      e.tool === 'Edit'
+        ? { result: { filePath: '/proj/k.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] }, text: 'updated' }
+        : { result: { type: 'text', file: { filePath: '/proj/x.ts', content: 'x', numLines: 1, startLine: 1, totalLines: 1 } }, text: 'x' },
+    )
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    for (const id of ['k-r1', 'k-r2']) await $.tool.call({ tool: 'Read', file_path: `/proj/${id}.ts`, tool_use_id: id })
+    await $.tool.call({ tool: 'Edit', file_path: '/proj/k.ts', old_string: 'a', new_string: 'b', tool_use_id: 'k-e1' })
+    await clock.settle()
+    const ui = await mountDesktop($)
+    const momentKeys = async () => (await ui.findAll({ type: 'Box' })).map(one => String(one.key)).filter(key => /^(call|file|run|agent|wf|frame):/.test(key))
+    expect(await momentKeys()).toEqual(['file:k-e1', 'run:k-r1'])
+    // A new call lands: drawn again, what was there keeps its key.
+    await $.tool.call({ tool: 'Read', file_path: '/proj/k-r3.ts', tool_use_id: 'k-r3' })
+    await clock.settle()
+    expect(await momentKeys()).toEqual(['run:k-r3', 'file:k-e1', 'run:k-r1'])
+    expect((await ui.findAll({ type: 'Button' })).map(one => String(one.key)).filter(key => key.startsWith('row:'))).toEqual(['row:k-r3', 'row:k-r2', 'row:k-r1'])
+    // Every top-level piece is a keyed Box; no key is a position.
+    const keys = (await ui.findAll({ type: 'Box' })).map(one => one.key).filter((key): key is string => key !== undefined)
+    expect(keys).toEqual(expect.arrayContaining(['live-view', 'header', 'screen-tools', 'sec-history']))
+    for (const key of keys) expect(key).not.toMatch(/^(now|h)-\d+$/)
+    await ui.unmount()
+  })
+
+  test('no drawing is interactive on the desktop, however busy', WITH_SPY, async ($, on) => {
+    const listing = JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': [{ udid: 'N-1', name: 'iPhone 17', state: 'Booted' }] } })
+    const { clock } = engine(on, {
+      run: argv => (argv[0] === 'xcrun' && argv[2] === 'list' ? { stdout: listing } : argv[0] === 'xcrun' || argv[0] === 'sips' ? {} : undefined),
+      read: path => (path.endsWith('.jpg') ? { base64: PNG } : undefined),
+    })
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let spawned = 0
+    on('agent.spawn', () => ({ model: 'm', agentId: spawned++ === 0 ? 'n-ag' : 'n-wa' }))
+    on('tool.call', async ($, e) => {
+      if (e.tool === 'Workflow') return { result: { status: 'async_launched', taskId: 't', runId: 'n-run', workflowName: 'ultra' }, text: 'launched' }
+      if (e.tool === 'Edit') return { result: { filePath: '/proj/a.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] }, text: 'updated' }
+      if (['n-b1', 'n-a1', 'n-s1'].includes(e.tool_use_id)) await gate
+      return { result: { stdout: 'built', stderr: '', interrupted: false }, text: 'ok' }
+    })
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await $.command.run({ command: 'cockpit', args: 'live on', origin: ORIGIN, presentation: PRESENTATION })
+    await $.tool.call({ tool: 'Read', file_path: '/proj/r.ts', tool_use_id: 'n-r1' })
+    await $.tool.call({ tool: 'Bash', command: 'npm run build', tool_use_id: 'n-b0' })
+    await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b', tool_use_id: 'n-e1' })
+    await $.tool.call({ tool: 'Workflow', name: 'ultra', tool_use_id: 'n-w1' } as never)
+    const spawn = { prompt: 'p', subagentType: 'general-purpose', provider: { plugin: 'engine', tier: 'core' } as const, parentModel: 'm', background: true, fork: false }
+    await $.agent.spawn({ ...spawn, tool_use_id: 'n-sp', description: 'Helper' })
+    await $.agent.spawn({ ...spawn, tool_use_id: 'n-w1', description: 'Part 1', workflow: { runId: 'n-run', agentIndex: 1 } })
+    const pending = [
+      $.tool.call({ tool: 'Agent', description: 'Scout', prompt: 'look', subagent_type: 'Explore', tool_use_id: 'n-s1' } as never),
+      $.tool.call({ tool: 'Bash', command: 'make', tool_use_id: 'n-a1', agentId: 'n-ag' } as never),
+      $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'n-b1' }),
+    ]
+    for (let i = 0; i < 50 && (await peek($, 'stats'))?.running !== 3; i += 1) await peek($, 'feed')
+    await clock.settle()
+    const ui = await mountDesktop($)
+    const svgs = await ui.findAll({ type: 'Svg' })
+    expect(svgs.length).toBeGreaterThanOrEqual(10)
+    for (const one of svgs) expect(one.props.isInteractive).toBeUndefined()
+    // Every kind of moment is there, each under its own key.
+    const keys = (await ui.findAll({ type: 'Box' })).map(one => String(one.key))
+    expect(keys).toEqual(expect.arrayContaining(['frame:ios:N-1', 'agent:n-ag', 'wf:n-run', 'agent:n-wa', 'agent:n-s1', 'call:n-b1', 'call:n-b0', 'file:n-e1', 'run:n-r1']))
+    // The subagent's call is a native row, its running command a terminal under its card.
+    expect((await ui.find({ key: 'row:n-a1' }))?.text).toContain('make')
+    expect(await drawnSvg(ui)).toContain('npm test')
+    await ui.unmount()
+    release()
+    await Promise.all(pending)
+    await clock.settle()
+  })
+
+  test("the pane's clock moves each second while something runs, else every 30 s", WITH_SPY, async ($, on) => {
+    const { clock, pane } = engine(on)
+    let writes = 0
+    on('state.set', ($, e, next) => {
+      if (e.plugin === 'cockpit' && e.key === 'now') writes += 1
+      return next(e)
+    })
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    on('tool.call', async () => {
+      await gate
+      return { result: { stdout: '', stderr: '', interrupted: false }, text: '' }
+    })
+    pane.isUp = true
+    await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+    await clock.settle()
+    const wait = async (seconds: number) => {
+      for (let i = 0; i < seconds; i += 1) await clock.advance(1000)
+    }
+    // Nothing runs: two moves in a minute.
+    writes = 0
+    await wait(60)
+    expect(writes).toBe(2)
+    // A command runs: a move each second, its time ticking.
+    const pending = $.tool.call({ tool: 'Bash', command: 'sleep 9', tool_use_id: 'c-slow' })
+    for (let i = 0; i < 50 && (await peek($, 'stats'))?.running !== 1; i += 1) await peek($, 'feed')
+    writes = 0
+    await wait(10)
+    expect(writes).toBeGreaterThanOrEqual(9)
+    release()
+    await pending
+    await clock.settle()
+  })
+})
+
 describe('app registry', () => {
   const bash = (command: string) => ({ tool: 'Bash', command })
   test('MCP servers, commands and file extensions name their app', async () => {
@@ -1389,9 +1803,12 @@ describe('cockpit universal screen', () => {
     await clock.settle()
     expect((await peek($, 'screen'))?.generation).toBe(gen)
     const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
+    // Claude's turn is over: the picture is history, a smaller card above the read that made it.
     const svgs = (await ui.findAll({ type: 'Svg' })).map(one => String(one.props.source))
+    expect(svgs[1]).toContain('HISTORY')
     expect(svgs[2]).toContain('<image href="data:image/png;base64,')
-    expect(svgs[2]).toContain('shots/home.png')
+    expect(await ui.find({ type: 'Box', key: 'frame:read:/proj/shots/home.png' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Read · shots\/home\.png|shots\/home\.png/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -1469,7 +1886,8 @@ describe('cockpit universal screen', () => {
     const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', component: 'Pane', requestId: 'cockpit', props: paneProps() })
     const svg = await drawnSvg(ui)
     expect(svg).toContain('aria-label="Finder"')
-    expect(svg).toContain('Watching')
+    expect(svg).toContain('NOW')
+    expect(await ui.find({ type: 'Text', text: /Finder · Downloads · Watching/ })).toBeDefined()
     const before = argvs.filter(a => a[0] === 'screencapture').length
     await clock.advance(4000)
     await clock.settle()
@@ -1554,18 +1972,17 @@ describe('cockpit universal screen', () => {
     }
   })
 
-  test('a frame tied to a call is now while that call is recent', async () => {
-    const frame = { ...EMPTY_SCREEN, source: 'file' as const, label: 'OpenSCAD · out/p.png', b64: PNG, eventId: 'scad', at: T0 }
+  test('an image a command wrote is now while Claude works, then sits above its command', async () => {
+    const shot: CockpitFrame = { key: 'file:/proj/out/p.png', source: 'file', label: 'OpenSCAD · out/p.png', b64: PNG, mime: 'image/png', eventId: 'scad', at: T0 }
     const scad: CockpitEvent = { id: 'scad', tool: 'Bash', cat: 'shell', title: 'OpenSCAD · Render', status: 'ok', startedAt: T0, endedAt: T0 + 100, input: '', app: 'openscad' }
-    const read: CockpitEvent = { id: 'rd', tool: 'Read', cat: 'read', title: 'a.png', status: 'ok', startedAt: T0, endedAt: T0 + 10, input: '' }
-    const base = { agents: [], workflows: [], changes: new Map(), now: T0 + 1000 }
-    // A command keeps its terminal under the frame.
-    expect(planLive({ ...base, events: [scad], screen: frame }).now.map(m => m.kind)).toEqual(['screen', 'call'])
-    // A Read's picture is the read itself.
-    expect(planLive({ ...base, events: [read], screen: { ...frame, eventId: 'rd' } }).now.map(m => m.kind)).toEqual(['screen'])
-    // Long past, or no longer among the newest calls: no screen.
-    expect(planLive({ ...base, events: [scad], screen: frame, now: T0 + 200_000 }).now.map(m => m.kind)).toEqual(['call'])
-    // A file frame is no capture: without its call it is not now.
-    expect(planLive({ ...base, events: [read], screen: frame }).now.map(m => m.kind)).toEqual(['call'])
+    const base = { agents: [], workflows: [], changes: new Map(), now: T0 + 1000, isLive: false }
+    // Claude is still at it: the picture is now, the command (done) tops the history.
+    const working = planLive({ ...base, events: [scad], frames: [shot], isWorking: true })
+    expect(working.now.map(m => m.kind)).toEqual(['frame'])
+    expect(working.history.map(m => m.kind)).toEqual(['call'])
+    // Its turn over: the picture sits above the command that made it.
+    const after = planLive({ ...base, events: [scad], frames: [shot], isWorking: false })
+    expect(after.now).toEqual([])
+    expect(after.history.map(m => m.kind)).toEqual(['frame', 'call'])
   })
 })

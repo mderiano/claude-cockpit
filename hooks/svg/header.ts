@@ -1,7 +1,7 @@
 // Cockpit's header card: who is working, a row of plain metrics and the
 // activity of the last minutes as one smooth area.
 import type { CockpitAgent, CockpitStats } from '../../types'
-import { fmtCount, fmtDur, SPARK_MS } from '../model'
+import { fmtCount, fmtSince, SPARK_MS } from '../model'
 import { esc, fitText, measure, pill, svgDoc, text } from './base'
 import type { SvgOut } from './base'
 
@@ -47,8 +47,8 @@ export const headerSvg = (width: number, d: HeaderSvgData): SvgOut => {
     ? pill(pad + 30 + measure('Cockpit', 15) + 12, 18, running > 0 ? `Working · ${running} agent${running === 1 ? '' : 's'}` : 'Working', '#d97757', { dot: true, pulse: true })
     : pill(pad + 30 + measure('Cockpit', 15) + 12, 18, 'Idle', '#78716c', { dot: true })
   body += state.svg
-  const since = d.now - stats.startedAt
-  const elapsed = stats.startedAt > 0 && d.now > 0 ? (since < 1000 ? '0s' : fmtDur(since)) : '—'
+  // To the minute: the header is the same picture from one second to the next.
+  const elapsed = stats.startedAt > 0 && d.now > 0 ? fmtSince(d.now - stats.startedAt) : '—'
   const right = `${elapsed} · ${stats.turns} turn${stats.turns === 1 ? '' : 's'}`
   body += text(width - pad, 32, right, 't3 num', 12, { anchor: 'end' })
 

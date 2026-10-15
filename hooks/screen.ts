@@ -20,8 +20,11 @@ export type Device = { kind: 'ios'; udid: string; name: string } | { kind: 'andr
 /** Simulators whose screen `simctl io screenshot` reads (a tvOS one may hang on it). */
 const SCREEN_RUNTIME_RE = /iOS|watchOS|xrOS|visionOS/
 
-/** The first booted simulator of `simctl list devices booted -j`, iOS first. */
-export const parseSimctl = (stdout: string): Device | undefined => {
+/**
+ * Every booted simulator of `simctl list devices booted -j` whose screen can
+ * be read, iOS first, at most `max`; undefined when the listing is no JSON.
+ */
+export const parseSimctlAll = (stdout: string, max = 4): Device[] | undefined => {
   let parsed: { devices?: Record<string, { udid?: string; name?: string; state?: string }[]> }
   try {
     parsed = JSON.parse(stdout) as typeof parsed
@@ -30,23 +33,40 @@ export const parseSimctl = (stdout: string): Device | undefined => {
   }
   const runtimes = Object.entries(parsed.devices ?? {}).filter(([runtime]) => SCREEN_RUNTIME_RE.test(runtime))
   runtimes.sort(([x], [y]) => Number(/iOS/.test(y)) - Number(/iOS/.test(x)))
+  const out: Device[] = []
   for (const [, list] of runtimes) {
-    for (const d of list) {
-      if (d.state === 'Booted' && typeof d.udid === 'string') return { kind: 'ios', udid: d.udid, name: d.name ?? 'Simulator' }
+    for (const d of Array.isArray(list) ? list : []) {
+      if (d.state === 'Booted' && typeof d.udid === 'string' && !out.some(one => one.kind === 'ios' && one.udid === d.udid))
+        out.push({ kind: 'ios', udid: d.udid, name: d.name ?? 'Simulator' })
     }
   }
-  return undefined
+  return out.slice(0, max)
 }
 
-/** The first ready device of `adb devices`. */
-export const parseAdb = (stdout: string, adb: string): Device | undefined => {
-  const line = stdout
+/** The first booted simulator of `simctl list devices booted -j`, iOS first. */
+export const parseSimctl = (stdout: string): Device | undefined => parseSimctlAll(stdout, 1)?.[0]
+
+/** Every ready device of `adb devices`, at most `max`. */
+export const parseAdbAll = (stdout: string, adb: string, max = 4): Device[] =>
+  stdout
     .split('\n')
     .slice(1)
     .map(one => one.trim().split(/\s+/))
-    .find(parts => parts[1] === 'device')
-  return line?.[0] !== undefined ? { kind: 'android', serial: line[0], adb } : undefined
-}
+    .filter(parts => parts[1] === 'device' && (parts[0] ?? '') !== '')
+    .slice(0, max)
+    .map(parts => ({ kind: 'android' as const, serial: parts[0] ?? '', adb }))
+
+/** The first ready device of `adb devices`. */
+export const parseAdb = (stdout: string, adb: string): Device | undefined => parseAdbAll(stdout, adb, 1)[0]
+
+/** The frame key of a device: `ios:<udid>`, `android:<serial>`. */
+export const deviceKey = (d: Device): string => (d.kind === 'ios' ? `ios:${d.udid}` : `android:${d.serial}`)
+
+/** What a device's frame is called. */
+export const deviceLabel = (d: Device): string => (d.kind === 'ios' ? d.name : `Android ${d.serial}`)
+
+/** A part of a file name made of safe characters only (a serial may hold `:`). */
+export const safeName = (text: string): string => text.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 64)
 
 // ---------------------------------------------------------------- image size
 const bytesOf = (b64: string, max: number): Uint8Array => {

@@ -353,7 +353,9 @@ describe('cockpit', () => {
         const svg = await drawnSvg(ui)
         expect(svg).toContain('Agent running')
         expect(svg).toContain('Bug hunter')
-        expect((await ui.find({ key: 'row:r1' }))?.text).toContain('x.ts')
+        // Its call is a drawn row with a chevron that unfolds it.
+        expect(svg).toContain('x.ts')
+        expect((await ui.find({ key: 'row:r1' }))?.text).toBe('›')
         expect(await ui.find({ key: 'f-ag-1' })).toBeUndefined()
         await ui.unmount()
         continue
@@ -1610,8 +1612,11 @@ describe('cockpit desktop live view', () => {
     // Every kind of moment is there, each under its own key.
     const keys = (await ui.findAll({ type: 'Box' })).map(one => String(one.key))
     expect(keys).toEqual(expect.arrayContaining(['frame:ios:N-1', 'agent:n-ag', 'wf:n-run', 'agent:n-wa', 'agent:n-s1', 'call:n-b1', 'call:n-b0', 'file:n-e1', 'run:n-r1']))
-    // The subagent's call is a native row, its running command a terminal under its card.
-    expect((await ui.find({ key: 'row:n-a1' }))?.text).toContain('make')
+    // The subagent's call is a drawn row (its running command unfolds under
+    // its terminal, so that row has no chevron of its own).
+    expect(await ui.find({ key: 'line:n-a1' })).toBeDefined()
+    expect(await ui.find({ key: 'row:n-a1' })).toBeUndefined()
+    expect(await drawnSvg(ui)).toContain('make')
     expect(await drawnSvg(ui)).toContain('npm test')
     await ui.unmount()
     release()

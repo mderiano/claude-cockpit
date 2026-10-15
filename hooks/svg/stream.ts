@@ -367,3 +367,55 @@ export const agentHeadSvg = (width: number, a: CockpitAgent, now: number): SvgOu
     `<rect x=".5" y=".5" width="${width - 1}" height="${h - 1}" rx="14" class="card"/><rect x=".5" y=".5" width="4" height="${h - 1}" rx="2" fill="${hue}"/>${body}`,
   )
 }
+
+export type CallRowData = {
+  status: CockpitEvent['status']
+  cat: CockpitCategory
+  title: string
+  /** After the title, in mono: the command, the change, the target. */
+  target: string
+  /** The change of an edit, coloured, before the target. */
+  delta?: { added: number; removed: number }
+  dur: string
+  /** A subagent's colour, as a thin bar at the row's start. */
+  agentHue?: string
+  app?: Badge
+  /** Unfolded, or running: the row sits on a tint. */
+  isOpen: boolean
+}
+
+/** Height of a call's row, in pixels. */
+export const CALL_ROW_H = 26
+
+/**
+ * One call as a drawn line: its state, its kind, what it did and how, how
+ * long. The surface draws no colour inside a button, so the row is a picture
+ * and the press that unfolds it sits beside it.
+ */
+export const callRowSvg = (width: number, r: CallRowData): SvgOut => {
+  const h = CALL_ROW_H
+  const isRunning = r.status === 'running'
+  let body = ''
+  if (r.isOpen || isRunning) body += `<rect x="0" y="1" width="${width}" height="${h - 2}" rx="7" class="sunk"/>`
+  if (r.agentHue !== undefined) body += `<rect x="1" y="6" width="3" height="${h - 12}" rx="1.5" fill="${r.agentHue}"/>`
+  body += statusMark(r.status, 14, h / 2, 5.5)
+  body += r.app !== undefined ? appTile(r.app, 26, 5, 16) : iconTile(r.cat, 26, 5, 16)
+  const tx = 50
+  const durW = measure(r.dur, 10.5) + 6
+  const avail = width - tx - durW - 6
+  const title = fitText(r.title, r.target === '' && r.delta === undefined ? avail : Math.max(60, avail * 0.55), 12)
+  body += text(tx, h / 2 + 4, title, r.status === 'error' || r.status === 'denied' ? 'err' : 't1', 12, { weight: isRunning ? 650 : 560 })
+  let x = tx + measure(title, 12) + 8
+  if (r.delta !== undefined) {
+    const plus = `+${r.delta.added}`
+    const minus = `−${r.delta.removed}`
+    body += text(x, h / 2 + 4, plus, 'add num', 11, { weight: 600 })
+    x += measure(`${plus} `, 11)
+    body += text(x, h / 2 + 4, minus, 'del num', 11, { weight: 600 })
+    x += measure(`${minus}  `, 11)
+  }
+  if (r.target !== '' && width - durW - 6 - x > 24)
+    body += text(x, h / 2 + 4, fitText(r.target, width - durW - 6 - x, 11, true), 't3 mono', 11)
+  body += text(width - 4, h / 2 + 4, r.dur, 't3 num', 10.5, { anchor: 'end' })
+  return svgDoc(width, h, body)
+}

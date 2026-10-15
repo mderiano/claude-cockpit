@@ -16,7 +16,7 @@ import type { SvgOut } from '../svg/base'
 import { agentName } from '../svg/feed'
 import { headerSvg } from '../svg/header'
 import { frameCardSvg, frameColor, isPortrait, sourceDetail, sourceName } from '../svg/screen'
-import { agentCardSvg, agentHeadSvg, COMPACT_ROWS, fileHeadSvg, nowCallSvg, runSummarySvg, sectionSvg, terminalHasMore, workflowCardSvg } from '../svg/stream'
+import { agentCardSvg, agentHeadSvg, callRowSvg, COMPACT_ROWS, fileHeadSvg, nowCallSvg, runSummarySvg, sectionSvg, terminalHasMore, workflowCardSvg } from '../svg/stream'
 import { appBadge } from './kit'
 import type { Kit } from './kit'
 
@@ -49,8 +49,8 @@ const PAIR_GAP = 2
 /** A screen in the history is a smaller card. */
 const HISTORY_FRAME_PX = 240
 
-const GLYPH: Record<CockpitStatus, string> = { running: '◐', ok: '✓', error: '✗', denied: '⛔' }
-const GLYPH_COLOR: Record<CockpitStatus, string> = { running: '#3b82f6', ok: '#22c55e', error: '#ef4444', denied: '#f97316' }
+/** Room beside a drawn row for the chevron that unfolds it, in pixels. */
+const CHEVRON_PX = 26
 const STATUS_WORD: Record<CockpitStatus, string> = { running: 'running', ok: 'done', error: 'failed', denied: 'denied' }
 
 /** What one drawing carries along: the kit, the data, what is unfolded, what Code may still hold. */
@@ -117,37 +117,48 @@ const rowTarget = (ev: CockpitEvent, cwd: string): string => {
   return ev.detail.startsWith('/') ? shortPath(ev.detail, cwd, 80) : ev.detail
 }
 
+/** What an edit's row says after its name: where the file lives. */
+const rowWhere = (ev: CockpitEvent, cwd: string): string => {
+  if (ev.filePath === undefined) return ''
+  const dir = dirname(ev.filePath)
+  return dir === '' || dir === cwd ? './' : `${shortPath(dir, cwd, 60)}/`
+}
+
 /**
- * One call as a line of text that unfolds: its state, what it did, how
- * (the command, the file), how long; a subagent's starts with its colour.
+ * One call as a drawn line (its state, kind, what it did and how, how long)
+ * with, beside it, the press that unfolds it: the surface draws no colour
+ * inside a button, so the line is a picture and the button a chevron.
  */
-const callRow = (c: Ctx, ev: CockpitEvent, withDetail: boolean): RenderElement[] => {
-  const { Button, Text } = c.k
-  const dur = took(ev, c.k.now)
+const callRow = (c: Ctx, ev: CockpitEvent, withDetail: boolean, width: number): RenderElement[] => {
+  const { Box, Button } = c.k
+  const key = `call:${ev.id}`
+  const isOpen = c.open.has(key)
   let title = ev.cat === 'edit' && ev.filePath !== undefined ? basename(ev.filePath) : ev.title
-  let target = rowTarget(ev, c.k.cwd)
+  let target = ev.cat === 'edit' ? rowWhere(ev, c.k.cwd) : rowTarget(ev, c.k.cwd)
   // A command with no description: the command is its title.
   if (target !== '' && target.startsWith(title)) {
     title = target
     target = ''
   }
-  const room = Math.max(12, c.k.W - (ev.agentId !== undefined ? 2 : 0) - 2 - 1 - dur.length - 3)
-  const shownTitle = clip(title, target === '' ? room : Math.max(10, Math.min(title.length, Math.ceil(room * 0.5))))
-  const left = room - shownTitle.length - 1
-  const shownTarget = target !== '' && left >= 6 ? clip(target, left) : ''
-  const key = `call:${ev.id}`
+  const rowW = Math.max(160, width - CHEVRON_PX)
+  const picture = callRowSvg(rowW, {
+    status: ev.status,
+    cat: ev.cat,
+    title,
+    target,
+    delta: ev.cat === 'edit' ? { added: ev.added ?? 0, removed: ev.removed ?? 0 } : undefined,
+    dur: took(ev, c.k.now),
+    agentHue: ev.agentId !== undefined ? agentColor(ev.agentId) : undefined,
+    app: appBadge(c.k, ev.app),
+    isOpen,
+  })
   const row = (
-    <Button key={`row:${ev.id}`} plain onPress={toggle(c.k, key)}>
-      {ev.agentId !== undefined ? <Text color={agentColor(ev.agentId)}>● </Text> : ''}
-      <Text color={GLYPH_COLOR[ev.status]} bold>
-        {`${GLYPH[ev.status]} `}
-      </Text>
-      <Text bold>{shownTitle}</Text>
-      {shownTarget !== '' ? <Text dimColor>{` ${shownTarget}`}</Text> : ''}
-      <Text dimColor>{` ${dur}`}</Text>
-    </Button>
+    <Box key={`line:${ev.id}`} flexDirection="row" alignItems="center" columnGap={1}>
+      {svg(c.k, 'pic', picture, `${title} ${target}`.trim())}
+      {withDetail ? <Button key={`row:${ev.id}`} plain dimColor label={isOpen ? '⌄' : '›'} onPress={toggle(c.k, key)} /> : null}
+    </Box>
   )
-  return withDetail && c.open.has(key) ? [row, callDetail(c, ev)] : [row]
+  return withDetail && isOpen ? [row, callDetail(c, ev)] : [row]
 }
 
 /** A call unfolded: its facts, its whole command (or its input), its whole output. */
@@ -274,7 +285,7 @@ const runView = (c: Ctx, events: readonly CockpitEvent[], key: string, width: nu
     <Box key={key} flexDirection="column">
       {svg(c.k, 'sum', runSummarySvg(width, events, c.k.now), `${events.length} call${events.length === 1 ? '' : 's'}`)}
       <Box key="rows" flexDirection="column" paddingLeft={1}>
-        {shown.flatMap(ev => callRow(c, ev, true))}
+        {shown.flatMap(ev => callRow(c, ev, true, width - 8))}
         {!isOpen && hidden > 0 ? <Button key={`runmore:${oldest}`} plain dimColor label={`+ ${hidden} more`} onPress={toggle(c.k, key)} /> : null}
         {isOpen && events.length > COMPACT_ROWS ? <Button key={`runless:${oldest}`} plain dimColor label="Show less" onPress={toggle(c.k, key)} /> : null}
       </Box>
@@ -301,7 +312,7 @@ const agentLiveView = (c: Ctx, m: Extract<Moment, { kind: 'agentLive' }>, key: s
             Starting…
           </Text>
         ) : (
-          rows.flatMap(ev => callRow(c, ev, ev.id !== term?.id))
+          rows.flatMap(ev => callRow(c, ev, ev.id !== term?.id, width - 16))
         )}
       </Box>
       {term !== undefined ? (

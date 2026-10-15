@@ -79,15 +79,24 @@ export const headerSvg = (width: number, d: HeaderSvgData): SvgOut => {
     const x = pad + i * colW
     if (i > 0) body += `<path d="M${(x - 8).toFixed(1)} ${y + 2}v30" class="line" stroke-width="1"/>`
     body += text(x, y + 18, m.value, `${m.cls ?? 't1'} num`, 19, { weight: 650 })
+    // The sub-value (a diff's +/-, a failure count) goes beside the value
+    // when the column has room, else beside the label, else nowhere: it
+    // never runs into the next column.
+    let labelX = x + measure(m.label, 11) + 6
     if (m.sub !== undefined) {
+      const room = colW - 14
       const vw = measure(m.value, 19) + 6
-      const isDiff = m.sub.startsWith('+')
-      if (isDiff) {
-        const [plus, minus] = m.sub.split(' ')
-        body += text(x + vw, y + 17, plus ?? '', 'add num', 11, { weight: 600 })
-        body += text(x + vw + measure(`${plus ?? ''} `, 11), y + 17, minus ?? '', 'del num', 11, { weight: 600 })
-      } else body += text(x + vw, y + 17, m.sub, 'err', 11, { weight: 600 })
+      const subW = measure(m.sub, 11)
+      const at = vw + subW <= room ? { x: x + vw, y: y + 17 } : labelX - x + subW <= room ? { x: labelX, y: y + 33 } : undefined
+      if (at !== undefined) {
+        if (m.sub.startsWith('+')) {
+          const [plus, minus] = m.sub.split(' ')
+          body += text(at.x, at.y, plus ?? '', 'add num', 11, { weight: 600 })
+          body += text(at.x + measure(`${plus ?? ''} `, 11), at.y, minus ?? '', 'del num', 11, { weight: 600 })
+        } else body += text(at.x, at.y, m.sub, 'err', 11, { weight: 600 })
+      }
     }
+    void labelX
     body += text(x, y + 33, m.label, 't3', 11, { weight: 500 })
   }
   y += 48
